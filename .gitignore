@@ -1,0 +1,13 @@
+node_modules/
+.env
+uploads/
+.vercel/
+/local.properties
+.gradle/
+.idea/
+build/
+app/build/
+*.iml
+.DS_Store
+/web/build/
+/backend/uploads/
