@@ -1,8 +1,12 @@
 const dotenv = require('dotenv');
 const path = require('path');
+const fs = require('fs');
 
-// override: true ensures .env values always take precedence
-dotenv.config({ path: path.join(__dirname, '../../.env'), override: true });
+// Load .env file if it exists (not present on Render/Vercel — env vars injected directly)
+const envPath = path.join(__dirname, '../../.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath, override: true });
+}
 
 module.exports = {
   port: process.env.PORT || 3000,

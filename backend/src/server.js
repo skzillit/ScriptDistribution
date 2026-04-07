@@ -81,29 +81,17 @@ app.get('/api/health', (req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// Connect to DB on first request (for serverless) or on start (for local)
-let dbConnected = false;
-app.use(async (req, res, next) => {
-  if (!dbConnected) {
-    await connectDB();
-    dbConnected = true;
-  }
-  next();
-});
-
-// Start server locally (not on Vercel)
-if (process.env.VERCEL !== '1') {
-  async function start() {
-    await connectDB();
-    dbConnected = true;
-    app.listen(config.port, () => {
-      console.log(`Server running on port ${config.port} in ${config.nodeEnv} mode`);
-    });
-  }
-  start().catch(err => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
+// Start server
+async function start() {
+  await connectDB();
+  app.listen(config.port, () => {
+    console.log(`Server running on port ${config.port} in ${config.nodeEnv} mode`);
   });
 }
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
 
 module.exports = app;
