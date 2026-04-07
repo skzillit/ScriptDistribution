@@ -81,17 +81,11 @@ app.get('/api/health', (req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// Start server
-async function start() {
-  await connectDB();
-  app.listen(config.port, () => {
-    console.log(`Server running on port ${config.port} in ${config.nodeEnv} mode`);
-  });
-}
-
-start().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
+// Start server — bind port first, then connect DB (so Render health check passes)
+const port = config.port || process.env.PORT || 10000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+  connectDB().catch(err => console.error('MongoDB connection error:', err.message));
 });
 
 module.exports = app;
