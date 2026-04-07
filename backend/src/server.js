@@ -44,8 +44,11 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Serve shared highlight assets
-app.use('/shared', express.static(path.join(__dirname, '../../shared')));
+// Serve shared highlight assets (check both local dev and deployed paths)
+const sharedPath = require('fs').existsSync(path.join(__dirname, '../../shared'))
+  ? path.join(__dirname, '../../shared')
+  : path.join(__dirname, '../shared');
+app.use('/shared', express.static(sharedPath));
 
 // API Routes
 app.use('/api/auth', authRoutes);

@@ -3,7 +3,9 @@ const fs = require('fs');
 const config = require('../config/env');
 
 const USE_LOCAL = process.env.USE_LOCAL_STORAGE === 'true' && process.env.VERCEL !== '1';
-const LOCAL_STORAGE_DIR = path.join(__dirname, '../../uploads');
+const LOCAL_STORAGE_DIR = process.env.RENDER
+  ? '/opt/render/project/src/uploads'
+  : path.join(__dirname, '../../uploads');
 
 // Ensure uploads dir exists
 if (USE_LOCAL && !fs.existsSync(LOCAL_STORAGE_DIR)) {
