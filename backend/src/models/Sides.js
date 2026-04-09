@@ -28,6 +28,7 @@ const sidesSchema = new mongoose.Schema({
   includeCallSheet: { type: Boolean, default: true },
   callSheetPages: { type: String, default: 'all' },
   pdfUrl: String,
+  scheduleStartPage: { type: Number, default: 0 },
   generatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   downloadCount: { type: Number, default: 0 },
   status: { type: String, enum: ['generating', 'ready', 'error', 'archived'], default: 'generating' },

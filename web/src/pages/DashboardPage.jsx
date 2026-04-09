@@ -131,10 +131,6 @@ function DashboardPage() {
                     onClick={() => window.location.href = `${getApiBaseUrl()}/api/highlight/${version._id}`}>
                     View Script
                   </button>
-                  <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-                    onClick={() => navigate(`/scripts/${activeScript._id}/breakdown/${version._id}`)}>
-                    {'\uD83E\uDDE0'} Breakdown
-                  </button>
                   <button className="btn-secondary"
                     onClick={() => navigate(`/scripts/${activeScript._id}/analytics`)}>
                     Analytics

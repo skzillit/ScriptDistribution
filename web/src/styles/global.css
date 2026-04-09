@@ -77,15 +77,23 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html, body, #root {
+  min-height: 100vh;
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg-primary);
   background-image: var(--gradient-bg);
   background-attachment: fixed;
   color: var(--text-primary);
-  min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
 }
 
 a { color: var(--accent); text-decoration: none; transition: color 0.2s; }

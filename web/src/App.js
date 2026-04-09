@@ -10,6 +10,7 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import SidesPage from './pages/SidesPage';
 import CallSheetPage from './pages/CallSheetPage';
 import SchedulePageNew from './pages/SchedulePageNew';
+import ScriptBreakdownPage from './pages/ScriptBreakdownPage';
 
 function App() {
   const { user, loading } = useAuth();
@@ -24,9 +25,9 @@ function App() {
   return (
     <>
       <Header />
-      <div style={{ display: 'flex' }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <Sidebar />
-        <main style={{ marginLeft: '220px', flex: 1, minHeight: 'calc(100vh - 60px)' }}>
+        <main style={{ marginLeft: '220px', flex: 1, minHeight: 'calc(100vh - 60px)', background: 'var(--bg-primary)', backgroundImage: 'var(--gradient-bg)', backgroundAttachment: 'fixed' }}>
           <Routes>
             <Route path="/" element={<Navigate to={defaultRoute} replace />} />
             {(role === 'admin' || role === 'editor') && (
@@ -37,6 +38,7 @@ function App() {
                 <Route path="/scripts/:id/breakdown/:versionId" element={<BreakdownPage />} />
                 <Route path="/scripts/:id/analytics" element={<AnalyticsPage />} />
                 <Route path="/schedule" element={<SchedulePageNew />} />
+                <Route path="/scripts/:id/script-breakdown" element={<ScriptBreakdownPage />} />
               </>
             )}
             <Route path="/sides" element={<SidesPage />} />

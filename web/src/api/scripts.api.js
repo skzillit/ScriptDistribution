@@ -83,3 +83,14 @@ export const analyticsApi = {
   getViewers: (scriptId) => client.get(`/analytics/scripts/${scriptId}/viewers`),
   getDownloads: (scriptId) => client.get(`/analytics/scripts/${scriptId}/downloads`),
 };
+
+export const scriptBreakdownApi = {
+  getScenesList: (versionId) => client.get(`/versions/${versionId}/scenes-list`),
+  getCategories: (scriptId) => client.get(`/scripts/${scriptId}/breakdown/categories`),
+  getBreakdownSheet: (scriptId, sceneId) => client.get(`/scripts/${scriptId}/breakdown/scenes/${sceneId}`),
+  tagText: (scriptId, sceneId, data) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/tag`, data),
+  removeTag: (scriptId, tagId) => client.delete(`/scripts/${scriptId}/breakdown/tags/${tagId}`),
+  aiAnalyze: (scriptId, sceneId) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/ai-analyze`),
+  bulkDecisions: (scriptId, sceneId, decisions) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/bulk-decisions`, { decisions }),
+  getElements: (scriptId, params) => client.get(`/scripts/${scriptId}/breakdown/elements`, { params }),
+};

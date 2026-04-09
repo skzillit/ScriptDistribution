@@ -862,13 +862,16 @@ async function getSidesHtml(req, res) {
   <div class="sides-header">
     <h1>${escapeHtml(sides.title)}</h1>
     <div class="meta">Scenes: ${(sides.sceneNumbers || []).join(', ')} | ${sides.totalScenes || 0} scene(s)${sides.shootDayInfo?.length ? ` | ${sides.shootDayInfo.length} shoot day(s)` : ''}</div>
-    <div style="margin-top:10px;display:flex;gap:6px;justify-content:center">
-      <button onclick="document.getElementById('html-view').style.display='block';document.getElementById('pdf-view').style.display='none';this.style.background='#e67e22';this.style.color='white';this.nextElementSibling.style.background='#1a1a1a';this.nextElementSibling.style.color='#888'" style="padding:6px 18px;border-radius:6px;border:1px solid rgba(255,140,0,0.2);font-size:12px;font-weight:700;cursor:pointer;background:#e67e22;color:white">HTML View</button>
-      <button onclick="document.getElementById('pdf-view').style.display='block';document.getElementById('html-view').style.display='none';this.style.background='#e67e22';this.style.color='white';this.previousElementSibling.style.background='#1a1a1a';this.previousElementSibling.style.color='#888'" style="padding:6px 18px;border-radius:6px;border:1px solid rgba(255,140,0,0.2);font-size:12px;font-weight:700;cursor:pointer;background:#1a1a1a;color:#888" ${sidesPdfUrl ? '' : 'disabled'}>PDF View</button>
-    </div>
   </div>
-  <!-- PDF View (hidden by default) -->
-  <div id="pdf-view" style="display:none;max-width:900px;margin:0 auto;padding:24px">
+  <!-- Section Navigation -->
+  <div style="position:sticky;top:0;z-index:40;background:var(--bg-glass,#0d0d0d);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,140,0,0.1);padding:8px 0;display:flex;justify-content:center;gap:6px" class="no-print">
+    ${callSheetPdfUrl ? `<button onclick="document.getElementById('section-callsheet').scrollIntoView({behavior:'smooth'})" style="padding:6px 16px;border-radius:8px;border:1px solid rgba(255,140,0,0.2);background:#0d0d0d;color:#e0e0e0;font-size:12px;font-weight:600;cursor:pointer">${'\uD83D\uDCCB'} Call Sheet</button>` : ''}
+    ${sidesPdfUrl ? `<button onclick="document.getElementById('section-sides').scrollIntoView({behavior:'smooth'})" style="padding:6px 16px;border-radius:8px;border:1px solid rgba(255,140,0,0.2);background:#0d0d0d;color:#e0e0e0;font-size:12px;font-weight:600;cursor:pointer">${'\uD83C\uDFAC'} Scenes</button>` : ''}
+    ${sides.shootDayInfo?.length ? `<button onclick="document.getElementById('section-schedule').scrollIntoView({behavior:'smooth'})" style="padding:6px 16px;border-radius:8px;border:1px solid rgba(255,140,0,0.2);background:#0d0d0d;color:#e0e0e0;font-size:12px;font-weight:600;cursor:pointer">${'\uD83D\uDCC5'} Schedule</button>` : ''}
+  </div>
+  <!-- PDF View (default) -->
+  <div id="pdf-view" style="max-width:900px;margin:0 auto;padding:24px">
+    ${callSheetPdfUrl ? '<div id="section-callsheet" style="scroll-margin-top:50px"></div>' : ''}
     <div id="combined-pdf-pages"></div>
     <p id="pdf-loading" style="color:#888;text-align:center;padding:40px">Loading PDFs...</p>
   </div>
@@ -927,13 +930,73 @@ async function getSidesHtml(req, res) {
         return pdf.numPages;
       });
     }
+    var pdfMeta = [
+      ${callSheetPdfUrl ? `{ url: "${callSheetPdfUrl}", section: "callsheet" }` : ''}${callSheetPdfUrl && sidesPdfUrl ? ',' : ''}
+      ${sidesPdfUrl ? `{ url: "${sidesPdfUrl}", section: "sides" }` : ''}
+    ].filter(Boolean);
+    var hasSchedule = ${sides.shootDayInfo?.length ? 'true' : 'false'};
+    var scheduleStartPage = ${sides.scheduleStartPage || 0};
+
     var offset = 0;
-    pdfs.forEach(function(url) { loadPdf(url, offset); offset += 100; });
+    var sectionInfo = {};
+    pdfMeta.forEach(function(meta) {
+      sectionInfo[meta.section] = { offset: offset, totalPages: 0 };
+      loadPdf(meta.url, offset, meta.section);
+      offset += 100;
+    });
+
+    // Track page counts per PDF
+    var origLoadPdf = loadPdf;
+    // After all loaded, insert section markers
+    var checkInterval = setInterval(function() {
+      if (loaded >= pdfMeta.length) {
+        clearInterval(checkInterval);
+        var markerStyle = 'scroll-margin-top:50px;padding:12px 0;text-align:center;font-size:14px;font-weight:700;color:#e67e22;border-bottom:2px solid rgba(255,140,0,0.2);margin-bottom:8px';
+
+        // Call Sheet marker
+        if (sectionInfo.callsheet) {
+          var csTarget = container.querySelector('[data-order="0"]');
+          if (csTarget) {
+            var m = document.createElement('div');
+            m.id = 'section-callsheet';
+            m.style.cssText = markerStyle;
+            m.textContent = '\uD83D\uDCCB Call Sheet';
+            csTarget.parentNode.insertBefore(m, csTarget);
+          }
+        }
+
+        // Scenes marker (start of sides PDF)
+        if (sectionInfo.sides) {
+          var sidesStart = sectionInfo.sides.offset;
+          var sidesTarget = container.querySelector('[data-order="' + sidesStart + '"]');
+          if (sidesTarget) {
+            var m2 = document.createElement('div');
+            m2.id = 'section-sides';
+            m2.style.cssText = markerStyle;
+            m2.textContent = '\uD83C\uDFAC Scenes';
+            sidesTarget.parentNode.insertBefore(m2, sidesTarget);
+          }
+
+          // Schedule marker at exact page
+          if (hasSchedule && scheduleStartPage > 0) {
+            var schedOrder = sidesStart + scheduleStartPage - 1;
+            var schedTarget = container.querySelector('[data-order="' + schedOrder + '"]');
+            if (schedTarget) {
+              var m3 = document.createElement('div');
+              m3.id = 'section-schedule';
+              m3.style.cssText = markerStyle;
+              m3.textContent = '\uD83D\uDCC5 Schedule';
+              schedTarget.parentNode.insertBefore(m3, schedTarget);
+            }
+          }
+        }
+      }
+    }, 500);
   })();
   </script>
 
   <!-- HTML View -->
-  <div id="html-view" class="script-container">
+  <div id="html-view" class="script-container" style="display:none">
     <!-- 1. CALL SHEET -->
     ${callSheetPdfUrl ? `
     <div style="margin-bottom:24px">
@@ -1050,7 +1113,7 @@ async function getSidesHtml(req, res) {
     <!-- Call sheet already rendered above -->
   </div>
   <div class="watermark">${escapeHtml(projectName)}</div>
-  <button class="print-btn" onclick="window.print()">Print Sides</button>
+  <!-- print button removed -->
 </body>
 </html>`;
 

@@ -187,9 +187,10 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
     sides.sceneNumbers = extractedScenes.map(s => s.sceneNumber);
 
     // Generate PDF
-    const pdfBuffer = await generateSidesPdf(sides);
+    const { buffer: pdfBuffer, scheduleStartPage: schedPage } = await generateSidesPdf(sides);
     const s3Key = `sides/${sides.script}/${sides._id}/sides.pdf`;
     await uploadFile(s3Key, pdfBuffer, 'application/pdf');
+    sides.scheduleStartPage = schedPage;
     sides.pdfUrl = s3Key;
 
     sides.status = 'ready';
@@ -208,13 +209,16 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
 function generateSidesPdf(sides) {
   return new Promise((resolve, reject) => {
     const chunks = [];
+    let totalPages = 0;
+    let scheduleStartPage = 0;
     const doc = new PDFDocument({
       size: 'LETTER',
       margins: { top: 50, bottom: 50, left: 60, right: 60 },
     });
+    doc.on('pageAdded', () => { totalPages++; });
 
     doc.on('data', chunk => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('end', () => resolve({ buffer: Buffer.concat(chunks), scheduleStartPage }));
     doc.on('error', reject);
 
     // Title page
@@ -319,6 +323,9 @@ function generateSidesPdf(sides) {
       doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
       y += 16;
     }
+
+    // Mark where schedule section starts (0-based page index for JS)
+    scheduleStartPage = totalPages + 1; // +1 for the first page (before pageAdded fires)
 
     // Shooting Schedule section
     const schedSections = [
@@ -537,9 +544,10 @@ For each scene include a summary of the action and dialogue. This is for our int
     sides.sceneNumbers = extractedScenes.map(s => s.sceneNumber);
 
     // Generate PDF
-    const pdfBuffer = await generateSidesPdf(sides);
+    const { buffer: pdfBuffer, scheduleStartPage: schedPage } = await generateSidesPdf(sides);
     const s3Key = `sides/${sides.script}/${sides._id}/sides.pdf`;
     await uploadFile(s3Key, pdfBuffer, 'application/pdf');
+    sides.scheduleStartPage = schedPage;
     sides.pdfUrl = s3Key;
 
     sides.status = 'ready';

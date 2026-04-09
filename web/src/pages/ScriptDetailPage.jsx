@@ -81,31 +81,18 @@ function ScriptDetailPage() {
           <h3 style={{ fontSize: '16px', marginBottom: '14px' }}>Actions</h3>
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <button className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '10px 18px' }}
-              onClick={() => window.location.href = `${getApiBaseUrl()}/api/highlight/${versionId}`}>
+              onClick={() => scriptsApi.downloadVersion(versionId).then(r => {
+                const url = r.data.downloadUrl;
+                window.location.href = url.startsWith('/') ? `${getApiBaseUrl()}${url}` : url;
+              })}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
               </svg>
               View Script
             </button>
             <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-              onClick={() => breakdownMutation.mutate({ versionId })}
-              disabled={breakdownMutation.isPending}>
-              <span>{'\uD83E\uDDE0'}</span> AI Breakdown
-            </button>
-            <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-              onClick={() => breakdownMutation.mutate({ versionId, mode: 'manual' })}
-              disabled={breakdownMutation.isPending}>
-              <span>{'\u270F\uFE0F'}</span> Manual Breakdown
-            </button>
-            <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-              onClick={() => scriptsApi.downloadVersion(versionId).then(r => {
-                const url = r.data.downloadUrl;
-                window.location.href = url.startsWith('/') ? `${getApiBaseUrl()}${url}` : url;
-              })}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" />
-              </svg>
-              View PDF
+              onClick={() => navigate(`/scripts/${id}/script-breakdown`)}>
+              <span>{'\uD83D\uDD0D'}</span> Script Breakdown
             </button>
             <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
               onClick={() => downloadMutation.mutate(versionId)}>
