@@ -1,33 +1,51 @@
 import { useCallback, useRef } from 'react';
 
-function classifyLine(line, prevType) {
-  const trimmed = line.trim();
+function classifyLine(trimmed, prevType) {
   if (!trimmed) return 'empty';
-  if (/^(INT\.|EXT\.|INT\/EXT\.|EXT\/INT\.|I\/E\.)/.test(trimmed)) return 'scene_heading';
-  if (/^\d+[A-Za-z]?\s+(INT\.|EXT\.|INT\/EXT\.)/.test(trimmed)) return 'scene_heading';
-  if (/^(FADE\s*(IN|OUT|TO)|CUT\s+TO|DISSOLVE\s+TO|SMASH\s+CUT)/i.test(trimmed)) return 'transition';
-  if (/^\(.*\)$/.test(trimmed)) return 'parenthetical';
   const cleaned = trimmed.replace(/\*+$/, '').trim();
-  if (/^[A-Z][A-Z\s\-'.()]+$/.test(cleaned) && cleaned.length < 45 && cleaned.length > 1
-    && !/^(INT\.|EXT\.|CONTINUED|FADE|THE END)/.test(cleaned)) return 'character';
-  if (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue') {
-    if (line.startsWith('  ') || line.startsWith('\t')) return 'dialogue';
-    if (prevType === 'character' || prevType === 'parenthetical') return 'dialogue';
+
+  // Scene heading
+  if (/^(INT\.|EXT\.|INT\/EXT\.|EXT\/INT\.|I\/E\.)/.test(cleaned)) return 'scene_heading';
+  if (/^\d+[A-Za-z]?\s+(INT\.|EXT\.|INT\/EXT\.)/.test(cleaned)) return 'scene_heading';
+
+  // Transition
+  if (/^(FADE\s*(IN|OUT|TO)|CUT\s+TO|DISSOLVE\s+TO|SMASH\s+CUT)/i.test(cleaned)) return 'transition';
+  if (/^[A-Z\s]+TO:\s*$/.test(cleaned)) return 'transition';
+
+  // Parenthetical — must follow character or dialogue
+  if (/^\(/.test(cleaned) && (prevType === 'character' || prevType === 'dialogue' || prevType === 'parenthetical')) {
+    return 'parenthetical';
   }
+
+  // Character name: ALL CAPS, short, not a heading/transition
+  if (/^[A-Z][A-Z\s.\-'\/()#]+$/.test(cleaned) && cleaned.length >= 2 && cleaned.length < 45
+    && !/^(INT\.|EXT\.|CONTINUED|FADE|THE END|ACT )/.test(cleaned)
+    && (prevType === 'action' || prevType === 'empty' || prevType === '' || prevType === 'scene_heading' || prevType === 'dialogue')) {
+    return 'character';
+  }
+
+  // Dialogue: anything following character, parenthetical, or previous dialogue
+  if (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue') {
+    // Only break out of dialogue for scene headings (already caught above),
+    // transitions (already caught above), or clear character names followed by empty line
+    return 'dialogue';
+  }
+
   return 'action';
 }
 
+// Indentation using padding-left so wrapped lines stay indented
 const TYPE_STYLES = {
-  scene_heading: { fontWeight: 700, textTransform: 'uppercase', borderBottom: '1px solid var(--border)', marginTop: 22, marginBottom: 12, paddingBottom: 8 },
-  character: { marginLeft: '35%', marginTop: 12, fontWeight: 600, textTransform: 'uppercase' },
-  parenthetical: { marginLeft: '28%', maxWidth: '35%', fontStyle: 'italic', color: 'var(--text-secondary)' },
-  dialogue: { marginLeft: '22%', maxWidth: '45%' },
-  transition: { textAlign: 'right', fontWeight: 600, textTransform: 'uppercase', marginTop: 12, marginBottom: 12, paddingRight: 40, color: 'var(--text-secondary)' },
-  action: { marginTop: 6, marginBottom: 4 },
-  empty: { height: 12 },
+  scene_heading: { fontWeight: 700, textTransform: 'uppercase', marginTop: 18, marginBottom: 4, paddingLeft: 0 },
+  character: { marginTop: 12, fontWeight: 600, textTransform: 'uppercase', paddingLeft: '35%', textAlign: 'left' },
+  parenthetical: { paddingLeft: '30%', textAlign: 'left' },
+  dialogue: { paddingLeft: '23%', paddingRight: '15%', textAlign: 'left' },
+  transition: { textAlign: 'right', fontWeight: 600, textTransform: 'uppercase', marginTop: 10, marginBottom: 10, paddingRight: 20 },
+  action: { marginTop: 4, marginBottom: 2, paddingLeft: 0 },
+  empty: {},
 };
 
-export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSelected, sceneNumber }) {
+export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSelected, onRemoveTag, sceneNumber }) {
   const containerRef = useRef(null);
 
   const tagsByLine = {};
@@ -53,10 +71,12 @@ export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSel
     return segments;
   };
 
+  // Classify all lines
   const lineTypes = [];
-  let prevType = 'action';
-  for (const line of scriptText) {
-    const type = classifyLine(line, prevType);
+  let prevType = '';
+  for (let i = 0; i < scriptText.length; i++) {
+    const trimmed = scriptText[i].trim();
+    const type = classifyLine(trimmed, prevType);
     lineTypes.push(type);
     prevType = type;
   }
@@ -68,7 +88,6 @@ export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSel
     const text = selection.toString().trim();
     if (!text) return;
 
-    // Find the line element (div with data-line-index)
     let startNode = range.startContainer;
     while (startNode && !startNode.dataset?.lineIndex) startNode = startNode.parentElement;
     let endNode = range.endContainer;
@@ -79,8 +98,6 @@ export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSel
     const endLineIndex = parseInt(endNode.dataset.lineIndex, 10);
     if (lineIndex !== endLineIndex) { selection.removeAllRanges(); return; }
 
-    // Calculate char offset within the line's content span only
-    // The content is inside the span[data-content="true"]
     const contentSpan = startNode.querySelector('[data-content="true"]');
     if (!contentSpan) return;
 
@@ -132,8 +149,8 @@ export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSel
       <div style={{
         width: '100%', maxWidth: 720, background: 'var(--bg-card)',
         border: '1px solid var(--border)', borderRadius: 10,
-        padding: '40px 50px 50px 65px', margin: '16px auto 24px',
-        fontFamily: "'Courier New', Courier, monospace", fontSize: 14, lineHeight: '22px',
+        padding: '40px 30px 50px 30px', margin: '16px auto 24px',
+        fontFamily: "'Courier New', Courier, monospace", fontSize: 13, lineHeight: '20px',
         color: 'var(--text-primary)', position: 'relative', flex: 1,
         boxShadow: 'var(--shadow-sm)',
       }}>
@@ -143,39 +160,34 @@ export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSel
           const typeStyle = TYPE_STYLES[type] || {};
           const segments = buildSegments(trimmed || '', tagsByLine[i]);
 
-          if (type === 'empty') return <div key={i} data-line-index={i} style={{ height: 12 }} />;
+          if (type === 'empty') return <div key={i} data-line-index={i} style={{ height: 20 }} />;
 
           return (
-            <div key={i} data-line-index={i} style={{ ...typeStyle, position: 'relative', padding: '2px 0' }}>
-              {/* Line number — outside content span, not selectable */}
-              <span style={{
-                position: 'absolute', left: -42, color: 'var(--text-muted)', fontSize: 10,
-                userSelect: 'none', width: 28, textAlign: 'right', lineHeight: '22px', opacity: 0.4,
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-              }}>
-                {i + 1}
-              </span>
-              {/* Scene number badge — outside content span, not selectable */}
-              {type === 'scene_heading' && sceneNumber && (
-                <span style={{
-                  position: 'absolute', right: -40, fontWeight: 700, fontSize: 11,
-                  color: '#fff', background: 'var(--accent)', padding: '1px 6px', borderRadius: 4,
-                  userSelect: 'none',
-                }}>
-                  {sceneNumber}
-                </span>
-              )}
-              {/* Content span — this is what we measure char offsets against */}
+            <div key={i} data-line-index={i} style={{ ...typeStyle, position: 'relative' }}>
+              {/* Content span */}
               <span data-content="true">
                 {segments.map((seg, j) =>
                   seg.tag ? (
                     <mark key={j}
-                      title={`${seg.tag.element_name} (${(seg.tag.category_slug || '').replace(/_/g, ' ')})`}
+                      title={`${seg.tag.element_name} (${(seg.tag.category_slug || '').replace(/_/g, ' ')}) — click to remove`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.getSelection()?.removeAllRanges();
+                        onRemoveTag?.(seg.tag._id);
+                      }}
                       style={{
                         backgroundColor: seg.tag.category_color ? `${seg.tag.category_color}35` : 'rgba(255,140,0,0.2)',
                         borderBottom: `2px solid ${seg.tag.category_color || 'var(--accent)'}`,
                         borderRadius: 3, padding: '1px 2px', cursor: 'pointer',
-                        color: 'inherit', transition: 'background-color 0.2s',
+                        color: 'inherit', transition: 'all 0.15s',
+                      }}
+                      onMouseOver={e => {
+                        e.currentTarget.style.backgroundColor = seg.tag.category_color ? `${seg.tag.category_color}60` : 'rgba(255,140,0,0.4)';
+                        e.currentTarget.style.textDecoration = 'line-through';
+                      }}
+                      onMouseOut={e => {
+                        e.currentTarget.style.backgroundColor = seg.tag.category_color ? `${seg.tag.category_color}35` : 'rgba(255,140,0,0.2)';
+                        e.currentTarget.style.textDecoration = 'none';
                       }}>
                       {seg.text}
                     </mark>

@@ -755,6 +755,69 @@ function formatScreenplay(rawText) {
   return out.join('\n');
 }
 
+/**
+ * Format raw script text as styled HTML divs with proper screenplay indentation.
+ * Uses CSS padding so wrapped lines maintain their indentation.
+ */
+function formatScreenplayHtml(rawText) {
+  const lines = rawText.split('\n');
+  const out = [];
+  let prevType = '';
+
+  function clean(s) { return s.replace(/\*+$/, '').trim(); }
+
+  function isSceneHeading(s) {
+    const c = clean(s);
+    return /^(INT\.|EXT\.|INT\/EXT\.|I\/E\.)\s+/i.test(c) ||
+           /^\d+[A-Za-z]?[\s.\/)]+\s*(INT|EXT|INT\/EXT|I\/E)[.\s]/i.test(c);
+  }
+  function isTransition(s) { return /^[A-Z\s]+TO:\s*\*?$/.test(clean(s)); }
+  function isCharacterName(s) {
+    const c = clean(s);
+    return /^[A-Z][A-Z\s.\-'\/()#]+$/.test(c) && c.length >= 2 && c.length < 45 &&
+           !isSceneHeading(s) && !isTransition(s) &&
+           !/^(CONTINUED|END OF|FADE|THE END|ACT )/.test(c);
+  }
+  function isParenthetical(s) { return clean(s).startsWith('('); }
+  function isContinued(s) { return /^\(CONTINUED\)|^CONTINUED:?/i.test(clean(s)); }
+  function isPageHeader(s) { return /SCRIPT\s+\d|^\d+\.\s*$|DIRECTOR'S CUT/i.test(clean(s)); }
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) { out.push('<div style="height:18px"></div>'); prevType = ''; continue; }
+    const escaped = escapeHtml(trimmed);
+    if (isContinued(trimmed) || isPageHeader(trimmed)) continue;
+
+    if (isSceneHeading(trimmed)) {
+      out.push(`<div style="font-weight:700;text-transform:uppercase;margin-top:18px;margin-bottom:4px">${escaped}</div>`);
+      prevType = 'heading'; continue;
+    }
+    if (isTransition(trimmed)) {
+      out.push(`<div style="text-align:right;font-weight:600;text-transform:uppercase;margin:10px 0;padding-right:20px;color:#aaa">${escaped}</div>`);
+      prevType = 'transition'; continue;
+    }
+    if (isCharacterName(trimmed) && prevType !== 'dialogue') {
+      out.push(`<div style="padding-left:35%;margin-top:12px;font-weight:600;text-transform:uppercase">${escaped}</div>`);
+      prevType = 'character'; continue;
+    }
+    if (isParenthetical(trimmed) && (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue')) {
+      out.push(`<div style="padding-left:30%">${escaped}</div>`);
+      prevType = 'parenthetical'; continue;
+    }
+    if (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue') {
+      if (!isCharacterName(trimmed) && !isSceneHeading(trimmed) && !isTransition(trimmed)) {
+        out.push(`<div style="padding-left:23%;padding-right:15%">${escaped}</div>`);
+        prevType = 'dialogue'; continue;
+      }
+    }
+    // Action
+    out.push(`<div style="margin-top:4px;margin-bottom:2px">${escaped}</div>`);
+    prevType = 'action';
+  }
+
+  return out.join('\n');
+}
+
 async function getSidesHtml(req, res) {
   const sides = await Sides.findById(req.params.id).populate('callSheet').populate('script', 'title');
   if (!sides) return res.status(404).json({ error: 'Sides not found' });
@@ -772,12 +835,12 @@ async function getSidesHtml(req, res) {
     sidesPdfUrl = await getDownloadUrl(sides.pdfUrl, 3600);
   }
 
-  // Generate per-scene HTML — apply standard screenplay formatting
+  // Generate per-scene HTML — apply standard screenplay formatting with CSS padding
   const scenesHtml = (sides.scenes || []).map(s => {
-    const formatted = formatScreenplay(s.rawText || '');
+    const formatted = formatScreenplayHtml(s.rawText || '');
     return `
     <div class="script-scene" data-scene="${escapeHtml(s.sceneNumber)}">
-      <pre class="page-content">${formatted}</pre>
+      <div class="page-content">${formatted}</div>
     </div>
     <hr style="border:none;border-top:2px solid rgba(255,140,0,0.15);margin:16px 0">`;
   }).join('');
@@ -811,7 +874,7 @@ async function getSidesHtml(req, res) {
     .script-container { max-width: 900px; margin: 0 auto; padding: 24px; }
     .script-scene { margin-bottom: 24px; background: #0d0d0d; border-radius: 8px; padding: 24px; border: 1px solid rgba(255,140,0,0.1); }
     .page-header { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,140,0,0.08); }
-    .page-content { font-family: 'Courier New', Courier, monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; color: #e0e0e0; margin: 0; padding: 0; background: transparent; border: none; overflow-x: auto; }
+    .page-content { font-family: 'Courier New', Courier, monospace; font-size: 13px; line-height: 20px; color: #e0e0e0; margin: 0; padding: 0; background: transparent; }
     .page-break { height: 1px; background: rgba(255,140,0,0.06); margin: 8px 0; }
     .print-btn {
       position: fixed; bottom: 20px; right: 20px;

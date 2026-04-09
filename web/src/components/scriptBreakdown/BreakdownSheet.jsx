@@ -111,25 +111,26 @@ export default function BreakdownSheet({ categories = [], onRemoveTag, sceneInfo
                       transition: 'all 0.15s',
                     }}>
                       {el.name}
+                      {el.tags.length > 1 && (
+                        <span style={{ fontSize: 10, opacity: 0.7 }}>({el.tags.length})</span>
+                      )}
                       {el.ai && (
                         <span style={{
                           fontSize: 9, fontWeight: 700, background: 'var(--accent-glow)', color: 'var(--accent)',
                           padding: '1px 4px', borderRadius: 3, letterSpacing: '0.3px',
                         }}>AI</span>
                       )}
-                      {el.tags.map(tag => (
-                        <button key={tag._id} onClick={(e) => { e.stopPropagation(); onRemoveTag(tag._id); }}
-                          title="Remove tag"
-                          style={{
-                            background: 'none', border: 'none', cursor: 'pointer',
-                            color: 'var(--text-muted)', fontSize: 13, padding: '0 1px', lineHeight: 1,
-                            transition: 'color 0.15s',
-                          }}
-                          onMouseOver={e => e.currentTarget.style.color = 'var(--error)'}
-                          onMouseOut={e => e.currentTarget.style.color = 'var(--text-muted)'}>
-                          &times;
-                        </button>
-                      ))}
+                      <button onClick={(e) => { e.stopPropagation(); el.tags.forEach(tag => onRemoveTag(tag._id)); }}
+                        title={`Remove all ${el.tags.length} tag(s)`}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: 'var(--text-muted)', fontSize: 13, padding: '0 1px', lineHeight: 1,
+                          transition: 'color 0.15s',
+                        }}
+                        onMouseOver={e => e.currentTarget.style.color = 'var(--error)'}
+                        onMouseOut={e => e.currentTarget.style.color = 'var(--text-muted)'}>
+                        &times;
+                      </button>
                     </span>
                   ))}
                 </div>

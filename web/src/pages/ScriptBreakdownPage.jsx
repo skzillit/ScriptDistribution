@@ -234,6 +234,7 @@ function ScriptBreakdownPage() {
             scriptText={sheetData?.scene?.script_text || []}
             tags={sheetData?.allTags || []}
             onTextSelected={handleTextSelected}
+            onRemoveTag={(tagId) => removeTagMutation.mutate(tagId)}
             sceneNumber={sheetData?.scene?.sceneNumbers?.[0]}
           />
         </div>
