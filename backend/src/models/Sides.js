@@ -11,6 +11,7 @@ const sidesSceneSchema = new mongoose.Schema({
 
 const sidesSchema = new mongoose.Schema({
   callSheet: { type: mongoose.Schema.Types.ObjectId, ref: 'CallSheet' },
+  shootingSchedule: { type: mongoose.Schema.Types.ObjectId, ref: 'ShootingSchedule', default: null },
   scriptVersion: { type: mongoose.Schema.Types.ObjectId, ref: 'ScriptVersion', required: true },
   script: { type: mongoose.Schema.Types.ObjectId, ref: 'Script', required: true },
   title: { type: String, required: true },

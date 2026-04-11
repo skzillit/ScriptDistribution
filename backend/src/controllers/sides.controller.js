@@ -2,7 +2,7 @@ const CallSheet = require('../models/CallSheet');
 const Sides = require('../models/Sides');
 const Script = require('../models/Script');
 const ScriptVersion = require('../models/ScriptVersion');
-const { uploadFile, getDownloadUrl, getScriptPdfKey } = require('../services/storage.service');
+const { uploadFile, getDownloadUrl, getScriptPdfKey, getFileBuffer } = require('../services/storage.service');
 const { extractTextFromPdf } = require('../services/pdf.service');
 const { parseCallSheetText, parseSceneNumberInput } = require('../utils/callSheetParser');
 const { extractSides, extractSidesWithAI, buildSceneMap } = require('../services/sides.service');
@@ -128,6 +128,7 @@ async function autoGenerateSides(user, callSheet) {
   // Create sides
   const sides = await Sides.create({
     callSheet: callSheet._id,
+    shootingSchedule: schedule?._id || null,
     scriptVersion: targetVersionId,
     script: activeScript._id,
     title: `Sides - ${callSheet.title}`,
@@ -541,6 +542,7 @@ async function generateSides(req, res) {
 
   const sides = await Sides.create({
     callSheet: callSheetId || null,
+    shootingSchedule: scheduleId || null,
     scriptVersion: targetVersionId,
     script: scriptId,
     title: titleStr,
@@ -604,7 +606,7 @@ async function getSides(req, res) {
 }
 
 async function downloadSides(req, res) {
-  const sides = await Sides.findById(req.params.id);
+  const sides = await Sides.findById(req.params.id).populate('callSheet');
   if (!sides) return res.status(404).json({ error: 'Sides not found' });
   if (sides.status !== 'ready') return res.status(400).json({ error: 'Sides not ready yet' });
   if (!sides.pdfUrl) return res.status(400).json({ error: 'PDF not available' });
@@ -625,6 +627,52 @@ async function downloadSides(req, res) {
       sidesId: sides._id,
     },
   });
+
+  // If the sides has an attached call sheet and includeCallSheet is true,
+  // merge the call sheet PDF onto the front of the sides PDF on-the-fly using pdf-lib.
+  // This matches the PDF view which shows: Call Sheet → Sides → Schedule.
+  const shouldAttachCallSheet = sides.includeCallSheet && sides.callSheet?.pdfUrl;
+  if (shouldAttachCallSheet) {
+    try {
+      const { PDFDocument } = require('pdf-lib');
+      const [sidesBuf, csBuf] = await Promise.all([
+        getFileBuffer(sides.pdfUrl),
+        getFileBuffer(sides.callSheet.pdfUrl),
+      ]);
+
+      const merged = await PDFDocument.create();
+      const csDoc = await PDFDocument.load(csBuf, { ignoreEncryption: true });
+      const sidesDoc = await PDFDocument.load(sidesBuf, { ignoreEncryption: true });
+
+      // Determine how many call sheet pages to include ("all" | "1" | "2" | ...)
+      const csPageSetting = sides.callSheetPages || 'all';
+      const totalCsPages = csDoc.getPageCount();
+      const csPageCount = csPageSetting === 'all'
+        ? totalCsPages
+        : Math.min(parseInt(csPageSetting) || totalCsPages, totalCsPages);
+      const csIndices = Array.from({ length: csPageCount }, (_, i) => i);
+
+      // Copy call sheet pages first
+      const csCopied = await merged.copyPages(csDoc, csIndices);
+      for (const p of csCopied) merged.addPage(p);
+
+      // Then all sides pages
+      const sidesCopied = await merged.copyPages(sidesDoc, sidesDoc.getPageIndices());
+      for (const p of sidesCopied) merged.addPage(p);
+
+      const mergedBytes = await merged.save();
+      const mergedBuffer = Buffer.from(mergedBytes);
+
+      // Upload the merged PDF to a temporary key; return a signed URL for it
+      const tempKey = `sides/${sides.script}/${sides._id}/download-${Date.now()}.pdf`;
+      await uploadFile(tempKey, mergedBuffer, 'application/pdf');
+      const url = await getDownloadUrl(tempKey);
+      return res.json({ downloadUrl: url, downloadCount: sides.downloadCount });
+    } catch (err) {
+      console.warn('[sides] PDF merge failed, returning sides-only:', err.message);
+      // Fall through to returning the plain sides PDF
+    }
+  }
 
   const url = await getDownloadUrl(sides.pdfUrl);
   res.json({ downloadUrl: url, downloadCount: sides.downloadCount });

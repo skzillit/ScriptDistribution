@@ -220,4 +220,4 @@ function parseShootingSchedule(rawText) {
   };
 }
 
-module.exports = { parseShootingSchedule };
+module.exports = { parseShootingSchedule, MM_INFO_RE, SCENE_NUM_RE, STD_HEADING_RE, DAY_HEADER_RE };
