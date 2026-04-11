@@ -93,4 +93,6 @@ export const scriptBreakdownApi = {
   aiAnalyze: (scriptId, sceneId) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/ai-analyze`),
   bulkDecisions: (scriptId, sceneId, decisions) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/bulk-decisions`, { decisions }),
   getElements: (scriptId, params) => client.get(`/scripts/${scriptId}/breakdown/elements`, { params }),
+  updateScene: (scriptId, sceneId, updates) => client.patch(`/scripts/${scriptId}/scenes/${sceneId}`, updates),
+  getCast: (scriptId) => client.get(`/scripts/${scriptId}/cast`),
 };

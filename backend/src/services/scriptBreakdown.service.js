@@ -195,6 +195,16 @@ async function tagTextSelection(projectId, sceneId, payload) {
         await BreakdownTag.insertMany(newTags);
         autoTagCount = newTags.length;
       }
+
+      // Auto-sync cast_ids on scenes when tagging a cast element
+      if (category_slug === 'cast') {
+        const sceneIdsToUpdate = new Set([sceneId.toString()]);
+        for (const nt of newTags) sceneIdsToUpdate.add(nt.scene_id.toString());
+        await ScriptPage.updateMany(
+          { _id: { $in: Array.from(sceneIdsToUpdate) } },
+          { $addToSet: { cast_ids: element._id } }
+        );
+      }
     }
   } catch (err) {
     console.error('Auto-detect tagging error:', err.message);
@@ -202,6 +212,56 @@ async function tagTextSelection(projectId, sceneId, payload) {
   }
 
   return { tag, element, autoTagCount };
+}
+
+// Update scene metadata (location, synopsis, cast_ids, etc.)
+async function updateScene(sceneId, updates) {
+  const allowed = ['location', 'locationAddress', 'synopsis', 'cast_ids', 'int_ext', 'day_night', 'set_name'];
+  const payload = {};
+  for (const key of allowed) {
+    if (updates[key] !== undefined) payload[key] = updates[key];
+  }
+  const scene = await ScriptPage.findByIdAndUpdate(sceneId, { $set: payload }, { new: true });
+  return scene;
+}
+
+// Get all cast elements for a project
+async function getProjectCast(projectId) {
+  const elements = await BreakdownElement.find({
+    project_id: projectId,
+    category_slug: 'cast',
+  }).sort({ name: 1 });
+  return elements;
+}
+
+// Parse scene heading for INT/EXT, set name, day/night
+// Handles formats like:
+//   "INT. COFFEE SHOP - DAY"
+//   "5  INT. COFFEE SHOP - DAY" (scene number prefix)
+//   "INT. COFFEE SHOP - DAY99" (trailing doubled scene number)
+//   "EXT. BEACH"  (no time of day)
+function parseSceneHeading(line) {
+  const result = { int_ext: '', set_name: '', day_night: '' };
+  if (!line) return result;
+
+  let t = String(line).trim().replace(/\*+$/, '').trim();
+  // Strip leading scene numbers like "5 " or "5A " or "5." before INT/EXT
+  t = t.replace(/^\d+[A-Za-z]?[\s.)-]+(?=(INT|EXT|I\/E))/i, '');
+  // Strip trailing doubled scene numbers (e.g. "99", "108108")
+  t = t.replace(/(\d+)\1\*?$/, '').trim();
+  // Strip trailing stray digits
+  t = t.replace(/\s+\d+\*?$/, '').trim();
+
+  // Match full heading
+  // group1 = INT/EXT, group2 = set name, group3 = optional time of day
+  const re = /^(INT\.?|EXT\.?|INT\/EXT\.?|EXT\/INT\.?|I\/E\.?)\s+(.+?)(?:\s*[-–—]\s*(DAY|NIGHT|DAWN|DUSK|CONTINUOUS|MORNING|EVENING|LATER|SAME TIME|AFTERNOON|MAGIC HOUR|SUNSET|SUNRISE)\b.*)?$/i;
+  const match = t.match(re);
+  if (match) {
+    result.int_ext = match[1].replace(/\./g, '').toUpperCase();
+    result.set_name = (match[2] || '').trim().replace(/\*+$/, '').trim();
+    result.day_night = (match[3] || '').trim().toUpperCase();
+  }
+  return result;
 }
 
 async function removeTag(tagId) {
@@ -352,5 +412,6 @@ Identify all breakdown elements. Return a JSON array.`;
 module.exports = {
   seedDefaultCategories, getBreakdownSheet, tagTextSelection, removeTag,
   getProjectElements, bulkAcceptRejectSuggestions, aiAnalyzeScene,
+  updateScene, getProjectCast, parseSceneHeading,
   DEFAULT_CATEGORIES, VALID_CATEGORIES,
 };

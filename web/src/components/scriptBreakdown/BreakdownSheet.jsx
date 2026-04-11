@@ -1,7 +1,23 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
-export default function BreakdownSheet({ categories = [], onRemoveTag, sceneInfo }) {
+export default function BreakdownSheet({
+  categories = [],
+  onRemoveTag,
+  sceneInfo,
+  sceneMeta,         // { location, locationAddress, synopsis, int_ext, set_name, day_night, cast_count }
+  onSynopsisChange,  // (text) => void — auto-save on blur
+  onOpenLocationPicker,  // (anchorEl) => void
+  onOpenCastPicker,      // (anchorEl) => void
+}) {
   const [collapsed, setCollapsed] = useState({});
+  const [showEmpty, setShowEmpty] = useState(false);
+  const [synopsisValue, setSynopsisValue] = useState(sceneMeta?.synopsis || '');
+  const locationBtnRef = useRef(null);
+  const castBtnRef = useRef(null);
+
+  useEffect(() => {
+    setSynopsisValue(sceneMeta?.synopsis || '');
+  }, [sceneMeta?.synopsis, sceneInfo?._id]);
 
   // Count total unique elements
   let totalElements = 0;
@@ -18,46 +34,137 @@ export default function BreakdownSheet({ categories = [], onRemoveTag, sceneInfo
     return { ...group, elements };
   });
 
+  const visibleCategories = showEmpty
+    ? processedCategories
+    : processedCategories.filter(g => g.elements.length > 0);
+
   const toggleCollapse = (slug) => {
     setCollapsed(prev => ({ ...prev, [slug]: !prev[slug] }));
   };
 
+  const handleSynopsisBlur = () => {
+    if (synopsisValue !== (sceneMeta?.synopsis || '')) {
+      onSynopsisChange?.(synopsisValue);
+    }
+  };
+
   return (
     <div style={{ overflowY: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
+      {/* Scene metadata header */}
       <div style={{
         padding: '14px 16px', borderBottom: '1px solid var(--border)',
         background: 'var(--bg-secondary)', flexShrink: 0,
       }}>
         {sceneInfo && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
-                Page {sceneInfo.pageNumber}
-              </div>
-              {sceneInfo.sceneNumbers?.length > 0 && (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                  Scene {sceneInfo.sceneNumbers.join(', ')}
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {sceneInfo.sceneNumbers?.length > 0
+                    ? `Scene ${sceneInfo.sceneNumbers.join(', ')}`
+                    : `Page ${sceneInfo.pageNumber}`}
                 </div>
-              )}
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  {sceneMeta?.int_ext ? `${sceneMeta.int_ext}.` : ''}{' '}
+                  {sceneMeta?.set_name || '—'}
+                  {sceneMeta?.day_night ? ` — ${sceneMeta.day_night}` : ''}
+                </div>
+              </div>
+              <div style={{
+                padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 600,
+                background: totalElements > 0 ? 'var(--accent-glow)' : 'var(--bg-card)',
+                color: totalElements > 0 ? 'var(--accent)' : 'var(--text-muted)',
+                border: `1px solid ${totalElements > 0 ? 'var(--accent)' : 'var(--border)'}`,
+              }}>
+                {totalElements} tag{totalElements !== 1 ? 's' : ''}
+              </div>
             </div>
-            <div style={{
-              padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 600,
-              background: totalElements > 0 ? 'var(--accent-glow)' : 'var(--bg-card)',
-              color: totalElements > 0 ? 'var(--accent)' : 'var(--text-muted)',
-              border: `1px solid ${totalElements > 0 ? 'var(--accent)' : 'var(--border)'}`,
-            }}>
-              {totalElements} element{totalElements !== 1 ? 's' : ''}
+
+            {/* Location + Cast buttons */}
+            <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+              <button ref={locationBtnRef}
+                onClick={() => onOpenLocationPicker?.(locationBtnRef.current?.getBoundingClientRect())}
+                title={sceneMeta?.location || 'Assign location'}
+                style={{
+                  flex: 1, padding: '7px 10px', borderRadius: 7,
+                  background: sceneMeta?.location ? 'var(--accent-glow)' : 'var(--bg-card)',
+                  border: `1px solid ${sceneMeta?.location ? 'var(--accent)' : 'var(--border)'}`,
+                  color: sceneMeta?.location ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                <span>{'\uD83D\uDCCD'}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {sceneMeta?.location || 'Location'}
+                </span>
+              </button>
+              <button ref={castBtnRef}
+                onClick={() => onOpenCastPicker?.(castBtnRef.current?.getBoundingClientRect())}
+                style={{
+                  flex: 1, padding: '7px 10px', borderRadius: 7,
+                  background: (sceneMeta?.cast_count || 0) > 0 ? 'var(--accent-glow)' : 'var(--bg-card)',
+                  border: `1px solid ${(sceneMeta?.cast_count || 0) > 0 ? 'var(--accent)' : 'var(--border)'}`,
+                  color: (sceneMeta?.cast_count || 0) > 0 ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'center',
+                }}>
+                <span>{'\uD83D\uDC65'}</span>
+                <span>Cast{sceneMeta?.cast_count ? ` (${sceneMeta.cast_count})` : ''}</span>
+              </button>
             </div>
-          </div>
+
+            {/* Synopsis */}
+            <div style={{ marginTop: 10 }}>
+              <label style={{
+                fontSize: 10, color: 'var(--text-muted)', display: 'block', marginBottom: 4,
+                fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.3px',
+              }}>
+                Synopsis
+              </label>
+              <textarea
+                value={synopsisValue}
+                onChange={(e) => setSynopsisValue(e.target.value)}
+                onBlur={handleSynopsisBlur}
+                placeholder="Scene description..."
+                rows={2}
+                style={{
+                  width: '100%', padding: '6px 10px', borderRadius: 6,
+                  border: '1px solid var(--border)', background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)', fontSize: 12, outline: 'none',
+                  resize: 'vertical', fontFamily: 'inherit', minHeight: 40,
+                }}
+              />
+            </div>
+          </>
         )}
       </div>
 
-      {/* Categories */}
+      {/* Show empty categories toggle */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '8px 16px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)',
+        fontSize: 11, color: 'var(--text-muted)', flexShrink: 0,
+      }}>
+        <span>Categories</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <span>Show empty</span>
+          <input type="checkbox" checked={showEmpty} onChange={(e) => setShowEmpty(e.target.checked)}
+            style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+        </label>
+      </div>
+
+      {/* Categories list */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
-        {processedCategories.map(group => {
+        {visibleCategories.length === 0 && (
+          <div style={{ textAlign: 'center', padding: 30, fontSize: 12, color: 'var(--text-muted)' }}>
+            No elements tagged yet.<br />
+            <span style={{ fontSize: 10 }}>Select text in the script to add tags.</span>
+          </div>
+        )}
+        {visibleCategories.map(group => {
           const hasElements = group.elements.length > 0;
-          const isCollapsed = collapsed[group.category.slug] ?? !hasElements;
+          const isCollapsed = collapsed[group.category.slug] ?? false;
 
           return (
             <div key={group.category.slug} style={{
@@ -66,7 +173,6 @@ export default function BreakdownSheet({ categories = [], onRemoveTag, sceneInfo
               background: hasElements ? 'var(--bg-card)' : 'transparent',
               overflow: 'hidden', transition: 'all 0.2s',
             }}>
-              {/* Category header — clickable */}
               <button onClick={() => toggleCollapse(group.category.slug)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%',
@@ -99,7 +205,6 @@ export default function BreakdownSheet({ categories = [], onRemoveTag, sceneInfo
                 </span>
               </button>
 
-              {/* Elements */}
               {!isCollapsed && hasElements && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '0 12px 10px' }}>
                   {group.elements.map((el, i) => (

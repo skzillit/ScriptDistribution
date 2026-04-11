@@ -12,6 +12,14 @@ const scriptPageSchema = new mongoose.Schema({
     endOffset: Number,
   }],
   sceneNumbers: [String],
+  // Scene metadata (for breakdown)
+  location: { type: String, default: '' },
+  locationAddress: { type: String, default: '' },
+  cast_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'BreakdownElement' }],
+  synopsis: { type: String, default: '' },
+  int_ext: { type: String, default: '' },
+  day_night: { type: String, default: '' },
+  set_name: { type: String, default: '' },
 }, { timestamps: true });
 
 scriptPageSchema.index({ scriptVersion: 1, pageNumber: 1 }, { unique: true });

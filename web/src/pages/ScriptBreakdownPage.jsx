@@ -7,6 +7,9 @@ import ScriptTextViewer from '../components/scriptBreakdown/ScriptTextViewer';
 import BreakdownSheet from '../components/scriptBreakdown/BreakdownSheet';
 import CategoryPicker from '../components/scriptBreakdown/CategoryPicker';
 import AISuggestionReview from '../components/scriptBreakdown/AISuggestionReview';
+import ScenesListSidebar from '../components/scriptBreakdown/ScenesListSidebar';
+import CastAssignPopover from '../components/scriptBreakdown/CastAssignPopover';
+import LocationAssignPopover from '../components/scriptBreakdown/LocationAssignPopover';
 
 function ScriptBreakdownPage() {
   const { id: scriptId } = useParams();
@@ -16,6 +19,9 @@ function ScriptBreakdownPage() {
   const [aiSuggestions, setAiSuggestions] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [showPanel, setShowPanel] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [locationPopover, setLocationPopover] = useState(null); // { anchorEl }
+  const [castPopover, setCastPopover] = useState(null); // { anchorEl }
 
   const { data: scriptData } = useQuery({
     queryKey: ['script', scriptId],
@@ -33,6 +39,7 @@ function ScriptBreakdownPage() {
 
   const scenes = scenesData?.scenes || [];
   const currentSceneId = selectedSceneId || scenes[0]?._id;
+  const currentSceneMeta = scenes.find(s => s._id === currentSceneId);
 
   const { data: sheetData } = useQuery({
     queryKey: ['breakdown-sheet', scriptId, currentSceneId],
@@ -46,10 +53,22 @@ function ScriptBreakdownPage() {
     enabled: !!scriptId,
   });
 
+  const { data: castData } = useQuery({
+    queryKey: ['project-cast', scriptId],
+    queryFn: () => scriptBreakdownApi.getCast(scriptId).then(r => r.data),
+    enabled: !!scriptId,
+  });
+
+  const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: ['breakdown-sheet'] });
+    queryClient.invalidateQueries({ queryKey: ['scenes-list', versionId] });
+    queryClient.invalidateQueries({ queryKey: ['project-cast', scriptId] });
+  };
+
   const tagMutation = useMutation({
     mutationFn: (data) => scriptBreakdownApi.tagText(scriptId, currentSceneId, data),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['breakdown-sheet'] });
+      refreshAll();
       const autoCount = res?.data?.autoTagCount || 0;
       toast.success(autoCount > 0 ? `Tagged (+${autoCount} auto-detected across script)` : 'Tagged');
     },
@@ -58,9 +77,15 @@ function ScriptBreakdownPage() {
 
   const removeTagMutation = useMutation({
     mutationFn: (tagId) => scriptBreakdownApi.removeTag(scriptId, tagId),
+    onSuccess: () => refreshAll(),
+  });
+
+  const updateSceneMutation = useMutation({
+    mutationFn: (updates) => scriptBreakdownApi.updateScene(scriptId, currentSceneId, updates),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['breakdown-sheet'] });
+      refreshAll();
     },
+    onError: () => toast.error('Failed to update scene'),
   });
 
   const handleTextSelected = useCallback((sel) => {
@@ -97,7 +122,7 @@ function ScriptBreakdownPage() {
       } else {
         toast.info(data.message || 'No suggestions found');
       }
-      queryClient.invalidateQueries({ queryKey: ['breakdown-sheet'] });
+      refreshAll();
     } catch (err) {
       toast.error(err.response?.data?.error || 'AI analysis failed');
     } finally {
@@ -108,7 +133,7 @@ function ScriptBreakdownPage() {
   const handleBulkDecisions = async (decisions) => {
     try {
       await scriptBreakdownApi.bulkDecisions(scriptId, currentSceneId, decisions);
-      queryClient.invalidateQueries({ queryKey: ['breakdown-sheet'] });
+      refreshAll();
       setAiSuggestions(null);
       toast.success('Decisions applied');
     } catch (err) {
@@ -116,9 +141,37 @@ function ScriptBreakdownPage() {
     }
   };
 
+  const handleSynopsisChange = (text) => {
+    updateSceneMutation.mutate({ synopsis: text });
+  };
+
+  const handleSaveLocation = ({ location, locationAddress }) => {
+    updateSceneMutation.mutate({ location, locationAddress });
+    setLocationPopover(null);
+    toast.success('Location updated');
+  };
+
+  const handleRemoveLocation = () => {
+    updateSceneMutation.mutate({ location: '', locationAddress: '' });
+    setLocationPopover(null);
+  };
+
+  const handleToggleCast = (castId) => {
+    const current = (currentSceneMeta?.cast_names || []);
+    const castList = castData?.cast || [];
+    // We need to store IDs, not names — fetch current assignedIds from scene's cast_ids
+    // For simplicity, build list of IDs from current scene's assigned cast (via name match)
+    const assignedIds = castList
+      .filter(c => current.includes(c.name))
+      .map(c => String(c._id));
+    const idStr = String(castId);
+    const newIds = assignedIds.includes(idStr)
+      ? assignedIds.filter(id => id !== idStr)
+      : [...assignedIds, idStr];
+    updateSceneMutation.mutate({ cast_ids: newIds });
+  };
+
   const currentIdx = scenes.findIndex(s => s._id === currentSceneId);
-  const goPrev = () => { if (currentIdx > 0) setSelectedSceneId(scenes[currentIdx - 1]._id); };
-  const goNext = () => { if (currentIdx < scenes.length - 1) setSelectedSceneId(scenes[currentIdx + 1]._id); };
 
   if (!scriptId) {
     return <div style={{ padding: 32, color: 'var(--text-muted)', textAlign: 'center' }}>No script selected.</div>;
@@ -128,13 +181,10 @@ function ScriptBreakdownPage() {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)', background: 'var(--bg-primary)' }}>
       {/* Header */}
       <div style={{
-        padding: '12px 20px',
-        background: 'var(--bg-secondary)',
-        borderBottom: '1px solid var(--border)',
-        flexShrink: 0,
+        padding: '12px 20px', background: 'var(--bg-secondary)',
+        borderBottom: '1px solid var(--border)', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          {/* Left: Back + Title */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Link to={`/scripts/${scriptId}`} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -155,47 +205,10 @@ function ScriptBreakdownPage() {
             </div>
           </div>
 
-          {/* Center: Scene navigation */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <button onClick={goPrev} disabled={currentIdx <= 0}
-              style={{
-                width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
-                fontSize: 13, cursor: currentIdx > 0 ? 'pointer' : 'default', opacity: currentIdx <= 0 ? 0.35 : 1,
-                transition: 'all 0.2s',
-              }}>
-              &#8592;
-            </button>
-            <select value={currentSceneId || ''} onChange={e => setSelectedSceneId(e.target.value)}
-              style={{
-                padding: '6px 28px 6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-                border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)',
-                minWidth: 160, cursor: 'pointer', appearance: 'none',
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%239a918a' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E")`,
-                backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center',
-              }}>
-              {scenes.map(s => (
-                <option key={s._id} value={s._id}>
-                  Page {s.pageNumber} {s.sceneNumbers?.length ? `— Sc. ${s.sceneNumbers.join(', ')}` : ''}
-                </option>
-              ))}
-            </select>
-            <button onClick={goNext} disabled={currentIdx >= scenes.length - 1}
-              style={{
-                width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
-                fontSize: 13, cursor: currentIdx < scenes.length - 1 ? 'pointer' : 'default',
-                opacity: currentIdx >= scenes.length - 1 ? 0.35 : 1, transition: 'all 0.2s',
-              }}>
-              &#8594;
-            </button>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
-              {currentIdx + 1} / {scenes.length}
-            </span>
-          </div>
-
-          {/* Right: Actions */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: 8 }}>
+              Scene {currentIdx + 1} / {scenes.length}
+            </span>
             <button onClick={handleAiAnalyze} disabled={aiLoading}
               style={{
                 padding: '7px 16px', borderRadius: 8, border: 'none', fontSize: 13, fontWeight: 600,
@@ -227,8 +240,16 @@ function ScriptBreakdownPage() {
         </div>
       </div>
 
-      {/* Main: Script viewer + Breakdown panel */}
+      {/* Main: Scenes sidebar + Script viewer + Breakdown panel */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+        <ScenesListSidebar
+          scenes={scenes}
+          currentSceneId={currentSceneId}
+          onSelectScene={setSelectedSceneId}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+
         <div style={{ flex: 1, overflow: 'hidden', transition: 'all 0.3s ease', background: 'var(--bg-primary)' }}>
           <ScriptTextViewer
             scriptText={sheetData?.scene?.script_text || []}
@@ -247,7 +268,11 @@ function ScriptBreakdownPage() {
             <BreakdownSheet
               categories={sheetData?.categories || []}
               sceneInfo={sheetData?.scene}
+              sceneMeta={currentSceneMeta}
               onRemoveTag={(tagId) => removeTagMutation.mutate(tagId)}
+              onSynopsisChange={handleSynopsisChange}
+              onOpenLocationPicker={(anchorEl) => setLocationPopover({ anchorEl })}
+              onOpenCastPicker={(anchorEl) => setCastPopover({ anchorEl })}
             />
           </div>
         )}
@@ -269,6 +294,33 @@ function ScriptBreakdownPage() {
           suggestions={aiSuggestions}
           onDecide={handleBulkDecisions}
           onClose={() => setAiSuggestions(null)}
+        />
+      )}
+
+      {/* Location popover */}
+      {locationPopover && (
+        <LocationAssignPopover
+          visible={true}
+          anchorEl={locationPopover.anchorEl}
+          currentLocation={currentSceneMeta?.location || ''}
+          currentAddress={currentSceneMeta?.locationAddress || ''}
+          onSave={handleSaveLocation}
+          onRemove={handleRemoveLocation}
+          onClose={() => setLocationPopover(null)}
+        />
+      )}
+
+      {/* Cast popover */}
+      {castPopover && (
+        <CastAssignPopover
+          visible={true}
+          anchorEl={castPopover.anchorEl}
+          cast={castData?.cast || []}
+          assignedIds={(castData?.cast || [])
+            .filter(c => (currentSceneMeta?.cast_names || []).includes(c.name))
+            .map(c => String(c._id))}
+          onToggle={handleToggleCast}
+          onClose={() => setCastPopover(null)}
         />
       )}
     </div>

@@ -34,15 +34,15 @@ function classifyLine(trimmed, prevType) {
   return 'action';
 }
 
-// Indentation using padding-left so wrapped lines stay indented
+// Industry-standard screenplay layout — matches reference project exactly
 const TYPE_STYLES = {
-  scene_heading: { fontWeight: 700, textTransform: 'uppercase', marginTop: 18, marginBottom: 4, paddingLeft: 0 },
-  character: { marginTop: 12, fontWeight: 600, textTransform: 'uppercase', paddingLeft: '35%', textAlign: 'left' },
-  parenthetical: { paddingLeft: '30%', textAlign: 'left' },
-  dialogue: { paddingLeft: '23%', paddingRight: '15%', textAlign: 'left' },
-  transition: { textAlign: 'right', fontWeight: 600, textTransform: 'uppercase', marginTop: 10, marginBottom: 10, paddingRight: 20 },
-  action: { marginTop: 4, marginBottom: 2, paddingLeft: 0 },
-  empty: {},
+  scene_heading: { fontWeight: 700, textTransform: 'uppercase', borderBottom: '1px solid var(--border)', marginTop: 20, marginBottom: 10, paddingBottom: 6 },
+  character: { marginLeft: '35%', maxWidth: '55%', marginTop: 12, fontWeight: 600, textTransform: 'uppercase' },
+  parenthetical: { marginLeft: '28%', maxWidth: '35%', fontStyle: 'italic', color: 'var(--text-secondary)' },
+  dialogue: { marginLeft: '22%', maxWidth: '45%' },
+  transition: { textAlign: 'right', fontWeight: 600, textTransform: 'uppercase', marginTop: 10, marginBottom: 10, paddingRight: 20, color: 'var(--text-secondary)' },
+  action: { marginTop: 6, marginBottom: 4 },
+  empty: { height: 10 },
 };
 
 export default function ScriptTextViewer({ scriptText = [], tags = [], onTextSelected, onRemoveTag, sceneNumber }) {

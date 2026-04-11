@@ -27,4 +27,10 @@ router.post('/scripts/:scriptId/breakdown/scenes/:sceneId/bulk-decisions', modul
 // All elements in project
 router.get('/scripts/:scriptId/breakdown/elements', moduleAuth, ctrl.getElements);
 
+// Update scene metadata (location, synopsis, cast_ids)
+router.patch('/scripts/:scriptId/scenes/:sceneId', moduleAuth, ctrl.updateScene);
+
+// Get all cast members in project
+router.get('/scripts/:scriptId/cast', moduleAuth, ctrl.getCast);
+
 module.exports = router;
