@@ -55,7 +55,7 @@ async function buildPdfSceneMap(pdfBuffer) {
       const pdfX = it.transform ? it.transform[4] : 0;
       const h = it.height || 12;
       const w = it.width || 0;
-      let line = linesMap.find(l => Math.abs(l.pdfY - pdfY) < 2);
+      let line = linesMap.find(l => Math.abs(l.pdfY - pdfY) < 4);
       if (!line) {
         line = { pdfY, items: [], maxHeight: h, text: '' };
         linesMap.push(line);
@@ -149,7 +149,7 @@ async function buildPdfSceneMap(pdfBuffer) {
  *   - Middle pages: full page
  *   - Last page: from top down to next scene heading (if any)
  */
-async function renderSceneImages(pdfBuffer, renderSpecs) {
+async function renderSceneImages(pdfBuffer, renderSpecs, options = {}) {
   const pdfjs = await loadPdfjs();
   const { createCanvas } = require('@napi-rs/canvas');
   const SCALE = 2;
@@ -170,8 +170,8 @@ async function renderSceneImages(pdfBuffer, renderSpecs) {
   // simple regex patterns.
   // Returns { contentTop, contentBottom } in canvas pixels (scaled).
   async function detectPageContentBounds(page, viewport, tc) {
-    const TOP_ZONE_RATIO = 0.10;    // top 10% → header zone
-    const BOTTOM_ZONE_RATIO = 0.08; // bottom 8% → footer zone
+    const TOP_ZONE_RATIO = options.topZoneRatio ?? 0.03;    // default 3% for script
+    const BOTTOM_ZONE_RATIO = options.bottomZoneRatio ?? 0.04; // default 4%
 
     // Group items into lines by PDF-space Y
     const lines = [];
@@ -180,7 +180,7 @@ async function renderSceneImages(pdfBuffer, renderSpecs) {
       const pdfY = it.transform ? it.transform[5] : 0;
       const pdfX = it.transform ? it.transform[4] : 0;
       const h = it.height || 12;
-      let line = lines.find(l => Math.abs(l.pdfY - pdfY) < 2);
+      let line = lines.find(l => Math.abs(l.pdfY - pdfY) < 4);
       if (!line) {
         line = { pdfY, items: [], text: '', maxHeight: h };
         lines.push(line);
@@ -196,16 +196,34 @@ async function renderSceneImages(pdfBuffer, renderSpecs) {
     lines.sort((a, b) => b.pdfY - a.pdfY);
 
     const topZoneBoundary = viewport.height * TOP_ZONE_RATIO;       // canvas Y
+    const EXTENDED_TOP_ZONE = viewport.height * 0.08;               // extended zone for pattern-based detection
     const bottomZoneBoundary = viewport.height * (1 - BOTTOM_ZONE_RATIO);
 
-    // Push contentTop BELOW every text line in the top zone
+    // Detect running headers / page numbers and push contentTop below them.
+    // Two passes:
+    //   1. Within the small top zone (3%), skip ALL lines unconditionally (like before)
+    //   2. Within the extended zone (8%), skip ONLY lines matching header patterns:
+    //      - Page numbers: "4.", "19.", standalone digits
+    //      - Running headers: title + date + page number (e.g., "SHOW DOGS GREEN SHOOTING SCRIPT 23.01.2017 4.")
+    //      - Continuation markers: "CONTINUED:", "5 CONTINUED: 5"
+    //      - "Printed on..." footer-style text at top (rare)
+    const HEADER_PATTERN = /\d+\.\s*$|^CONTINUED|^\d+\s+CONTINUED|\bPrinted on\b|\b\d{2}\.\d{2}\.\d{4}\b|\b\d{2}\/\d{2}\/\d{4}\b/i;
+
     let contentTop = 0;
     for (const line of lines) {
       const baselineY = viewport.height - line.pdfY * SCALE;
-      if (baselineY > topZoneBoundary) break; // out of top zone
-      // Push contentTop past this line (below its baseline + small pad)
+      if (baselineY > EXTENDED_TOP_ZONE) break; // beyond extended zone, stop
+
       const lineBottom = baselineY + 4;
-      if (lineBottom > contentTop) contentTop = lineBottom;
+
+      if (baselineY <= topZoneBoundary) {
+        // Small zone: skip everything unconditionally
+        if (lineBottom > contentTop) contentTop = lineBottom;
+      } else if (HEADER_PATTERN.test(line.text)) {
+        // Extended zone: skip only lines that look like headers/page numbers
+        if (lineBottom > contentTop) contentTop = lineBottom;
+      }
+      // Else: in extended zone but NOT a header → this is real content, don't push contentTop
     }
 
     // Push contentBottom ABOVE every text line in the bottom zone
@@ -396,7 +414,7 @@ async function buildSchedulePdfSceneMap(pdfBuffer) {
       const pdfY = it.transform ? it.transform[5] : 0;
       const pdfX = it.transform ? it.transform[4] : 0;
       const h = it.height || 12;
-      let line = linesMap.find(l => Math.abs(l.pdfY - pdfY) < 2);
+      let line = linesMap.find(l => Math.abs(l.pdfY - pdfY) < 4);
       if (!line) {
         line = { pdfY, items: [], maxHeight: h, text: '' };
         linesMap.push(line);
@@ -627,9 +645,9 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
     // Build scene map from the entire script
     const sceneMap = buildSceneMap(fullText, pageOffsets);
 
-    if (sceneMap.length === 0) {
-      throw new Error('No scenes detected in the script. Ensure the script has standard scene headings (INT./EXT.).');
-    }
+    // Note: sceneMap may be empty if the text-based detection fails (e.g., scene numbers on
+    // separate lines from headings). The PDF-based approach below is more reliable and will
+    // be used as the source of truth. Only fail later if BOTH approaches return nothing.
 
     // Normalize requested scene numbers.
     // Special case: strip trailing "PT" suffix (case-insensitive) — e.g. "107PT" → "107".
@@ -763,7 +781,6 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
     }
 
     // Render shooting schedule scenes as images from the original schedule PDF.
-    // Same image-based approach as script scenes — falls back to text rendering on error.
     try {
       if (sides.shootingSchedule) {
         const ShootingSchedule = require('../models/ShootingSchedule');
@@ -772,7 +789,6 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
           const schedPdfBuffer = await getFileBuffer(schedule.pdfUrl);
           const schedSceneMap = await buildSchedulePdfSceneMap(schedPdfBuffer);
 
-          // Probe total page count
           const pdfjsMod = await loadPdfjs();
           const schedProbe = await pdfjsMod.getDocument({
             data: bufferToUint8(schedPdfBuffer),
@@ -781,27 +797,20 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
           const schedTotalPages = schedProbe.numPages;
           await schedProbe.destroy();
 
-          // Collect ALL scene numbers from shootDayInfo (primary + extra days)
           const schedRequestedScenes = new Set();
           for (const day of sides.shootDayInfo || []) {
             for (const s of day.scenes || []) {
-              if (s.sceneNumber) {
-                schedRequestedScenes.add(String(s.sceneNumber).toUpperCase().replace(/PT$/, ''));
-              }
+              if (s.sceneNumber) schedRequestedScenes.add(String(s.sceneNumber).toUpperCase().replace(/PT$/, ''));
             }
           }
 
           const schedSpecs = buildRenderSpecs(schedSceneMap, schedRequestedScenes, schedTotalPages);
-          console.log('[sides] Schedule scene map:', schedSceneMap.map(s => `${s.sceneNumber}@p${s.pageNumber}`).join(', '));
-          console.log('[sides] Schedule requested:', Array.from(schedRequestedScenes).join(', '));
-          console.log('[sides] Schedule render specs:', schedSpecs.map(s => `${s.sceneNumber}(p${s.startPage}-${s.endPage})`).join(', '));
-
           if (schedSpecs.length > 0) {
-            const schedImages = await renderSceneImages(schedPdfBuffer, schedSpecs);
+            const schedImages = await renderSceneImages(schedPdfBuffer, schedSpecs, {
+              topZoneRatio: 0.10,    // schedule headers ("Shooting Schedule", title, date) are ~8% from top
+              bottomZoneRatio: 0.05, // schedule footers ("Printed on...") near bottom
+            });
             sides._scheduleImages = schedImages;
-          } else {
-            console.warn('[sides] Schedule render specs empty — text fallback will be used');
-            sides._scheduleImages = null;
           }
         }
       }
@@ -1004,12 +1013,9 @@ function generateSidesPdf(sides) {
       { key: 'stunts', label: 'Stunts' }, { key: 'animals', label: 'Animals' },
     ];
 
-    // Build a lookup: sceneNumber → schedule images (normalized via PT strip)
     const scheduleImagesLookup = {};
     if (Array.isArray(sides._scheduleImages)) {
-      for (const si of sides._scheduleImages) {
-        scheduleImagesLookup[si.sceneNumber] = si.images || [];
-      }
+      for (const si of sides._scheduleImages) scheduleImagesLookup[si.sceneNumber] = si.images || [];
     }
 
     if (sides.shootDayInfo?.length) {
@@ -1032,87 +1038,61 @@ function generateSidesPdf(sides) {
         doc.moveDown(0.5);
 
         for (const s of (day.scenes || [])) {
-          const normSceneNum = String(s.sceneNumber || '').toUpperCase().replace(/PT$/, '');
-          const sceneImages = scheduleImagesLookup[normSceneNum];
+          const normNum = String(s.sceneNumber || '').toUpperCase().replace(/PT$/, '');
+          const sceneImgs = scheduleImagesLookup[normNum];
 
-          if (sceneImages && sceneImages.length > 0) {
-            // ─── IMAGE PATH: embed cropped schedule pages ───
-            const TARGET_W = 492;
-            const PAGE_BOTTOM = 750;
-            for (const imgBuffer of sceneImages) {
-              let img;
-              try {
-                img = doc.openImage(imgBuffer);
-              } catch (e) {
-                console.error('Schedule openImage failed for scene', normSceneNum, e.message);
-                continue;
-              }
-              const targetH = (img.height / img.width) * TARGET_W;
-              const remaining = PAGE_BOTTOM - doc.y;
-              if (targetH > PAGE_BOTTOM - 55) {
-                // Larger than a single page — start fresh page and scale down
+          if (sceneImgs && sceneImgs.length > 0) {
+            // Image path
+            const TW = 492, PB = 750;
+            for (const imgBuf of sceneImgs) {
+              let img; try { img = doc.openImage(imgBuf); } catch (e) { continue; }
+              const tH = (img.height / img.width) * TW;
+              if (tH > PB - 55) {
                 if (doc.y > 55) doc.addPage();
-                const maxH = PAGE_BOTTOM - 55;
-                const scaledH = Math.min(targetH, maxH);
-                const scaledW = (img.width / img.height) * scaledH;
-                const xCentered = 60 + (TARGET_W - scaledW) / 2;
-                doc.image(imgBuffer, xCentered, doc.y, { width: scaledW, height: scaledH });
-                doc.y += scaledH + 8;
+                const sH = Math.min(tH, PB - 55), sW = (img.width / img.height) * sH;
+                doc.image(imgBuf, 60 + (TW - sW) / 2, doc.y, { width: sW, height: sH });
+                doc.y += sH + 8;
               } else {
-                if (targetH > remaining) doc.addPage();
-                doc.image(imgBuffer, 60, doc.y, { width: TARGET_W });
-                doc.y += targetH + 8;
+                if (tH > PB - doc.y) doc.addPage();
+                doc.image(imgBuf, 60, doc.y, { width: TW });
+                doc.y += tH + 8;
               }
             }
-            if (doc.y > PAGE_BOTTOM) doc.addPage();
+            if (doc.y > PB) doc.addPage();
             doc.moveTo(60, doc.y).lineTo(552, doc.y).stroke('#DDDDDD');
             doc.moveDown(0.5);
           } else {
-            // ─── FALLBACK TEXT PATH: original text-based rendering per scene ───
+            // Text fallback
             if (doc.y > 680) { doc.addPage(); }
-
             doc.font('Courier-Bold').fontSize(12);
             doc.text(s.sceneNumber || '', { continued: false });
             doc.font('Courier').fontSize(11);
             doc.text(`${s.intExt || ''}  ${s.location || ''}  ${s.timeOfDay || ''}  ${s.pages || ''}`);
             if (s.synopsis) { doc.fontSize(10).text(s.synopsis); }
             doc.moveDown(0.3);
-
             const activeSections = schedSections.filter(sec => s[sec.key]?.length > 0);
-            const colX1 = 60;
-            const colX2 = 310;
-            const colW = 230;
-
             for (let si = 0; si < activeSections.length; si += 2) {
               if (doc.y > 680) { doc.addPage(); }
-              const startY = doc.y;
-              let maxY = startY;
-
+              const startY = doc.y; let maxY = startY;
               const left = activeSections[si];
-              doc.font('Courier-Bold').fontSize(10);
-              doc.text(left.label, colX1, startY, { width: colW, underline: true });
+              doc.font('Courier-Bold').fontSize(10).text(left.label, 60, startY, { width: 230, underline: true });
               doc.font('Courier').fontSize(10);
               left.items = s[left.key];
-              left.items.forEach(item => doc.text(item, colX1, doc.y, { width: colW }));
+              left.items.forEach(item => doc.text(item, 60, doc.y, { width: 230 }));
               maxY = Math.max(maxY, doc.y);
-
               if (si + 1 < activeSections.length) {
                 const right = activeSections[si + 1];
-                doc.font('Courier-Bold').fontSize(10);
-                doc.text(right.label, colX2, startY, { width: colW, underline: true });
+                doc.font('Courier-Bold').fontSize(10).text(right.label, 310, startY, { width: 230, underline: true });
                 doc.font('Courier').fontSize(10);
-                s[right.key].forEach(item => doc.text(item, colX2, doc.y, { width: colW }));
+                s[right.key].forEach(item => doc.text(item, 310, doc.y, { width: 230 }));
                 maxY = Math.max(maxY, doc.y);
               }
-
               doc.y = maxY + 6;
             }
-
             if (s.notes) {
               doc.font('Courier-Bold').fontSize(10).text('Notes', 60, doc.y, { underline: true });
               doc.font('Courier').fontSize(10).text(s.notes, 60, doc.y);
             }
-
             doc.moveDown(0.5);
             doc.moveTo(60, doc.y).lineTo(552, doc.y).stroke('#DDDDDD');
             doc.moveDown(0.5);
@@ -1289,4 +1269,4 @@ For each scene include a summary of the action and dialogue. This is for our int
   }
 }
 
-module.exports = { extractSides, extractSidesWithAI, generateSidesPdf, buildSceneMap };
+module.exports = { extractSides, extractSidesWithAI, generateSidesPdf, buildSceneMap, buildPdfSceneMap };

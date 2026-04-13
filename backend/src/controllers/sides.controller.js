@@ -1258,41 +1258,67 @@ async function getScriptScenes(req, res) {
   const version = await ScriptVersion.findById(versionId);
   if (!version) return res.status(404).json({ error: 'Version not found' });
 
-  const allPages = await ScriptPage.find({ scriptVersion: versionId }).sort({ pageNumber: 1 });
-  if (!allPages.length) return res.status(404).json({ error: 'No pages found for this version' });
+  // Use the PDF-based scene map (pdfjs) for reliable scene detection.
+  // The text-based buildSceneMap and per-page sceneNumbers both fail on scripts where
+  // scene numbers are on separate lines from the INT./EXT. heading.
+  const { buildPdfSceneMap } = require('../services/sides.service');
+  const { getFileBuffer, getScriptPdfKey } = require('../services/storage.service');
 
-  // Build full text with page offsets
-  let fullText = '';
-  const pageOffsets = [];
-  for (const page of allPages) {
-    const start = fullText.length;
-    fullText += page.rawText + '\n';
-    pageOffsets.push({ pageNumber: page.pageNumber, start, end: fullText.length - 1 });
+  try {
+    // Load the script PDF and build the scene map via pdfjs
+    const script = await Script.findById(version.script);
+    const pdfBuffer = await getFileBuffer(getScriptPdfKey(script._id, versionId));
+    const pdfSceneMap = await buildPdfSceneMap(pdfBuffer);
+
+    // Dedupe by scene number (keep first occurrence)
+    const seen = new Set();
+    const scenes = [];
+    for (let i = 0; i < pdfSceneMap.length; i++) {
+      const s = pdfSceneMap[i];
+      if (seen.has(s.sceneNumber)) continue;
+      seen.add(s.sceneNumber);
+
+      // Find next different scene for pageEnd
+      let nextPage = s.pageNumber;
+      for (let j = i + 1; j < pdfSceneMap.length; j++) {
+        if (pdfSceneMap[j].sceneNumber !== s.sceneNumber) {
+          nextPage = pdfSceneMap[j].pageNumber;
+          break;
+        }
+      }
+
+      // Parse heading for location / time of day
+      const heading = s.heading || '';
+      const match = heading.match(
+        /^(?:\d+[A-Za-z]?[\s.\/)]+\s*)?(INT|EXT|INT\/EXT|I\/E)[.\s]+(.+?)(?:\s*[-–—]\s*(.+))?$/i
+      );
+
+      scenes.push({
+        sceneNumber: s.sceneNumber,
+        heading: heading.replace(/\s+\d+[A-Za-z]?\s*$/, '').trim() || `Scene ${s.sceneNumber}`,
+        intExt: match ? match[1].toUpperCase() : '',
+        location: match ? match[2].trim() : '',
+        timeOfDay: match && match[3] ? match[3].trim() : '',
+        pageStart: s.pageNumber,
+        pageEnd: nextPage,
+      });
+    }
+
+    res.json({ versionId, totalScenes: scenes.length, scenes });
+  } catch (err) {
+    console.error('getScriptScenes PDF-based detection failed:', err.message);
+    // Fallback: return pages as "scenes" so the UI isn't completely empty
+    const allPages = await ScriptPage.find({ scriptVersion: versionId })
+      .select('pageNumber sceneNumbers rawText')
+      .sort({ pageNumber: 1 });
+    const scenes = allPages.map(p => ({
+      sceneNumber: p.sceneNumbers?.[0] || `P${p.pageNumber}`,
+      heading: `Page ${p.pageNumber}`,
+      intExt: '', location: '', timeOfDay: '',
+      pageStart: p.pageNumber, pageEnd: p.pageNumber,
+    }));
+    res.json({ versionId, totalScenes: scenes.length, scenes });
   }
-
-  const sceneMap = buildSceneMap(fullText, pageOffsets);
-
-  // Parse location and time from each heading
-  const scenes = sceneMap.map(s => {
-    const match = s.heading.match(
-      /^(?:\d+[A-Za-z]?[\s.\/)]+\s*)?(INT|EXT|INT\/EXT|I\/E)[.\s]+(.+?)(?:\s*[-–]\s*(.+))?$/i
-    );
-    return {
-      sceneNumber: s.sceneNumber,
-      heading: s.heading,
-      intExt: match ? match[1].toUpperCase() : '',
-      location: match ? match[2].trim() : '',
-      timeOfDay: match && match[3] ? match[3].trim() : '',
-      pageStart: s.pageStart,
-      pageEnd: s.pageEnd,
-    };
-  });
-
-  res.json({
-    versionId,
-    totalScenes: scenes.length,
-    scenes,
-  });
 }
 
 module.exports = {

@@ -84,29 +84,73 @@ function extractScenesFromText(text) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
+    // Stop at CAST section header, Total Pages, or crew section — scenes are done.
+    // "CAST#" and "CAST MEMBERS" in scene column headers should NOT trigger this cutoff.
+    if (inSceneSection && (
+      /^CAST\s*$/i.test(line) ||                    // standalone "CAST" line (section header)
+      /^CAST\s+No\b/i.test(line) ||                 // "CAST No Artist..." table header
+      /^Total\s+pages/i.test(line) ||                // "Total pages 2 6/8"
+      /^CREW\s*$/i.test(line) ||                     // standalone "CREW" section
+      /^EXTRAS\s*$/i.test(line) ||                   // standalone "EXTRAS" section
+      /^STAND-?INS?\s*$/i.test(line)                 // standalone "STAND-INS" section
+    )) {
+      break;
+    }
+
     // Detect start of scene listing section
-    if (/^SC\.\s+SET/i.test(line) || /^SCENE\s+/i.test(line) || /^SC\.\s+.*D\/N/i.test(line)) {
+    if (/^SC\.\s+SET/i.test(line) || /^SCENE\s+/i.test(line) || /^SC\.\s+.*D\/N/i.test(line)
+        || /\bSC\b.*\bSET\b/i.test(line) || /\bSC\b.*\bD\/N\b/i.test(line) || /\bSCENE\b.*\bSYNOPSIS\b/i.test(line)) {
       inSceneSection = true;
       continue;
     }
 
     if (!inSceneSection) continue;
 
-    // A scene number line: standalone number (2+ digits) optionally followed by letter suffix (pt, A, B)
-    // MUST be followed within 1-3 lines by an INT/EXT heading to confirm it's a real scene
-    const sceneNumMatch = line.match(/^(\d{2,4}[A-Za-z]{0,3})\s*$/);
-    if (sceneNumMatch) {
-      // Lookahead: check if INT/EXT appears within 4 non-empty lines
-      let hasHeading = false;
+    // Scene RANGE: "60-66" or "60-66p/up" — expand to individual scene numbers
+    const rangeMatch = line.match(/^(\d{1,4})\s*[-–]\s*(\d{1,4})\s*(p\/up|pt\d?|pickup)?\s*$/i);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1]);
+      const end = parseInt(rangeMatch[2]);
+      // Lookahead for INT/EXT heading
+      let heading = '', intExt = '', location = '', timeOfDay = '';
       for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
         const peek = lines[j].trim();
+        if (!peek || /^p\/up$/i.test(peek) || /^pt\d?$/i.test(peek)) continue;
+        if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+/i.test(peek)) {
+          heading = peek;
+          const locMatch = peek.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+(.+?)(?:\s*[-–]\s*(.+))?$/i);
+          if (locMatch) { intExt = locMatch[1].toUpperCase(); location = locMatch[2].trim(); timeOfDay = locMatch[3]?.trim() || ''; }
+          break;
+        }
+        break;
+      }
+      if (start <= end && end - start < 20) {
+        for (let n = start; n <= end; n++) {
+          scenes.push({ sceneNumber: String(n), heading, description: '', intExt, location, timeOfDay, pages: '', cast: [], notes: '' });
+        }
+      }
+      continue;
+    }
+
+    // A scene number line: standalone number (2+ digits) optionally followed by letter suffix (pt, pt2, A, B)
+    // MUST be followed within 1-3 lines by an INT/EXT heading to confirm it's a real scene
+    const sceneNumMatch = line.match(/^(\d{2,4}[A-Za-z]{0,4})\s*$/);
+    if (sceneNumMatch) {
+      // Lookahead: check if INT/EXT appears within 5 non-empty lines
+      // Skip "p/up", "pt2", "pickup" lines (they're markers, not headings)
+      let hasHeading = false;
+      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+        const peek = lines[j].trim();
         if (!peek) continue;
-        if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+/i.test(peek)) { hasHeading = true; break; }
-        if (/^\d{2,4}[A-Za-z]{0,3}\s*$/.test(peek)) break; // another number, not a heading
+        if (/^(p\/up|pt\d?|pickup)$/i.test(peek)) continue; // skip pickup/part markers
+        if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+/i.test(peek)) { hasHeading = true; break; }
+        if (/^\d{1,4}[A-Za-z]{0,4}\s*$/.test(peek)) break; // another number, not a heading
+        break; // any other text — not a heading
       }
       if (!hasHeading) continue; // Skip — not a real scene number
 
-      const sceneNumber = sceneNumMatch[1];
+      // Normalize: strip pt/pt2 suffix
+      const sceneNumber = sceneNumMatch[1].replace(/pt\d?$/i, '');
       let heading = '', intExt = '', location = '', timeOfDay = '', description = '', pages = '';
       let cast = [];
 
@@ -121,16 +165,16 @@ function extractScenesFromText(text) {
           for (let k = j + 1; k < Math.min(j + 5, lines.length); k++) {
             const pk = lines[k].trim();
             if (!pk) continue;
-            if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+/i.test(pk)) { nextHasHeading = true; break; }
+            if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+/i.test(pk)) { nextHasHeading = true; break; }
             break;
           }
           if (nextHasHeading) break;
         }
 
         // INT/EXT heading
-        if (!heading && /^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+/i.test(nextLine)) {
+        if (!heading && /^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+/i.test(nextLine)) {
           heading = nextLine;
-          const locMatch = nextLine.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+(.+?)(?:\s*[-–]\s*(.+))?$/i);
+          const locMatch = nextLine.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+(.+?)(?:\s*[-–]\s*(.+))?$/i);
           if (locMatch) {
             intExt = locMatch[1].toUpperCase();
             location = locMatch[2].trim();
@@ -163,7 +207,7 @@ function extractScenesFromText(text) {
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
         const peek = lines[j].trim();
         if (!peek) continue;
-        if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+/i.test(peek)) { hasHeading = true; break; }
+        if (/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+/i.test(peek)) { hasHeading = true; break; }
         break;
       }
       if (!hasHeading) continue;
@@ -174,9 +218,9 @@ function extractScenesFromText(text) {
       for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
         const nextLine = lines[j].trim();
         if (!nextLine) continue;
-        if (!heading && /^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+/i.test(nextLine)) {
+        if (!heading && /^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+/i.test(nextLine)) {
           heading = nextLine;
-          const locMatch = nextLine.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+(.+?)(?:\s*[-–]\s*(.+))?$/i);
+          const locMatch = nextLine.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+(.+?)(?:\s*[-–]\s*(.+))?$/i);
           if (locMatch) { intExt = locMatch[1].toUpperCase(); location = locMatch[2].trim(); timeOfDay = locMatch[3]?.trim() || ''; }
           continue;
         }
@@ -190,7 +234,7 @@ function extractScenesFromText(text) {
     const inlineMatch = line.match(/^(?:sc\.?|scene)\s*#?\s*(\d{1,4}[A-Za-z]{0,3})[\s:]+(.+)/i);
     if (inlineMatch) {
       const desc = inlineMatch[2].trim();
-      const locMatch = desc.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)\s+(.+?)(?:\s*[-–]\s*(.+))?$/i);
+      const locMatch = desc.match(/^(INT|EXT|INT\/EXT|EXT\/INT|I\/E)[.\s]+(.+?)(?:\s*[-–]\s*(.+))?$/i);
       scenes.push({
         sceneNumber: inlineMatch[1],
         heading: locMatch ? desc : '',
