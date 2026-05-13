@@ -24,6 +24,9 @@ interface ApiService {
     @POST("scripts")
     suspend fun createScript(@Body body: CreateScriptRequest): Response<ScriptResponse>
 
+    @GET("scripts/active")
+    suspend fun getActiveScript(): Response<ActiveScriptResponse>
+
     @GET("scripts/{id}")
     suspend fun getScript(@Path("id") id: String): Response<ScriptResponse>
 
@@ -51,6 +54,16 @@ interface ApiService {
 
     @GET("versions/{versionId}/download")
     suspend fun downloadVersion(@Path("versionId") versionId: String): Response<DownloadResponse>
+
+    @GET("versions/{versionId}/scenes")
+    suspend fun getScriptScenes(@Path("versionId") versionId: String): Response<ScriptScenesResponse>
+
+    // Shooting Schedule
+    @GET("schedules")
+    suspend fun listSchedules(@Query("limit") limit: Int = 100): Response<SchedulesListResponse>
+
+    @GET("schedules/{id}")
+    suspend fun getSchedule(@Path("id") id: String): Response<ScheduleDetailResponse>
 
     // Breakdown
     @POST("versions/{versionId}/breakdown")

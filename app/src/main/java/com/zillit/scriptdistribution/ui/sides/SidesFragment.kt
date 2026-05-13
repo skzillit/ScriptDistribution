@@ -10,9 +10,7 @@ import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.zillit.scriptdistribution.data.api.ApiClient
-import com.zillit.scriptdistribution.data.models.GenerateSidesRequest
 import com.zillit.scriptdistribution.databinding.FragmentSidesBinding
 
 class SidesFragment : Fragment() {
@@ -32,8 +30,16 @@ class SidesFragment : Fragment() {
 
         sidesAdapter = SidesAdapter(
             onView = { sides ->
+                // Open the sides view in our in-app WebView so users stay in the app.
+                // The activity passes the same auth headers our OkHttp interceptor uses,
+                // so the backend authenticates the request and returns the rendered HTML
+                // with embedded PDF view, schedule and call sheet.
                 val url = "${ApiClient.BASE_URL}/api/sides/${sides.id}/view"
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                val intent = Intent(requireContext(), SidesWebViewActivity::class.java).apply {
+                    putExtra(SidesWebViewActivity.EXTRA_URL, url)
+                    putExtra(SidesWebViewActivity.EXTRA_TITLE, sides.title.ifBlank { "Sides" })
+                }
+                startActivity(intent)
             },
             onDownload = { sides ->
                 viewModel.downloadSides(sides.id)
@@ -106,27 +112,13 @@ class SidesFragment : Fragment() {
     }
 
     private fun showGenerateDialog() {
-        val input = android.widget.EditText(requireContext()).apply {
-            hint = "Scene numbers (e.g. 1, 3, 5-8, 12A)"
-            setPadding(48, 32, 48, 16)
-        }
-
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("Generate Sides")
-            .setMessage("Enter scene numbers to extract from script. You can also upload a call sheet first.")
-            .setView(input)
-            .setPositiveButton("Generate") { _, _ ->
-                val scenes = input.text.toString().trim()
-                if (scenes.isNotBlank()) {
-                    // For now, generate with manual scene input
-                    // TODO: Add script picker dialog
-                    Toast.makeText(requireContext(),
-                        "Please use the web app to select a script and generate sides.",
-                        Toast.LENGTH_LONG).show()
-                }
+        val dialog = GenerateSidesDialog().apply {
+            onSidesGenerated = {
+                // Refresh the sides list when a new sides job is queued
+                viewModel.loadSides()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
+        dialog.show(parentFragmentManager, "GenerateSidesDialog")
     }
 
     override fun onDestroyView() {

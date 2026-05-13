@@ -157,6 +157,58 @@ data class Sides(
     val createdAt: String?
 )
 
+// Shooting Schedule
+data class ShootDayScene(
+    val sceneNumber: String?,
+    val heading: String?,
+    val intExt: String?,
+    val location: String?,
+    val timeOfDay: String?,
+    val pages: String?,
+    val synopsis: String?
+)
+
+data class ShootDay(
+    val dayNumber: Int?,
+    val date: String?,
+    val callTime: String?,
+    val wrapTime: String?,
+    val location: String?,
+    val scenes: List<ShootDayScene>?,
+    val notes: String?
+)
+
+data class ShootingSchedule(
+    @SerializedName("_id") val id: String,
+    val title: String,
+    val pdfUrl: String?,
+    val shootDays: List<ShootDay>?,
+    val totalDays: Int?,
+    val totalScenes: Int?,
+    val startDate: String?,
+    val endDate: String?,
+    val status: String?,
+    val createdAt: String?
+)
+
+data class SchedulesListResponse(val schedules: List<ShootingSchedule>, val total: Int)
+data class ScheduleDetailResponse(val schedule: ShootingSchedule)
+
+// Script scenes endpoint
+data class ScriptSceneInfo(
+    val sceneNumber: String,
+    val heading: String?,
+    val intExt: String?,
+    val location: String?,
+    val timeOfDay: String?,
+    val pageStart: Int?,
+    val pageEnd: Int?
+)
+data class ScriptScenesResponse(val versionId: String, val totalScenes: Int, val scenes: List<ScriptSceneInfo>)
+
+// Active script
+data class ActiveScriptResponse(val script: Script?)
+
 // API Requests
 data class GenerateSidesRequest(
     val callSheetId: String? = null,
@@ -164,7 +216,12 @@ data class GenerateSidesRequest(
     val versionId: String? = null,
     val sceneNumbers: String? = null,
     val title: String? = null,
-    val mode: String? = "manual" // "manual" or "ai"
+    val mode: String? = "manual", // "manual" or "ai"
+    val includeCallSheet: Boolean? = null,
+    val callSheetPages: String? = null,
+    val scheduleId: String? = null,
+    val primaryDay: Int? = null,
+    val matchedDays: List<Int>? = null
 )
 
 data class CreateScriptRequest(

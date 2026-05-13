@@ -97,9 +97,20 @@ function extractScenesFromText(text) {
       break;
     }
 
-    // Detect start of scene listing section
-    if (/^SC\.\s+SET/i.test(line) || /^SCENE\s+/i.test(line) || /^SC\.\s+.*D\/N/i.test(line)
-        || /\bSC\b.*\bSET\b/i.test(line) || /\bSC\b.*\bD\/N\b/i.test(line) || /\bSCENE\b.*\bSYNOPSIS\b/i.test(line)) {
+    // Detect start of scene listing section.
+    // Covers all known call sheet header formats:
+    //   "SC. SET / SYNOPSIS D/N PAGE CAST# DOGS#"
+    //   "LOC SC SET/SYNOPSIS D/N PGs CAST NOTES/BG"
+    //   "SCENE SET/SYNOPSIS D/N PGs CAST"
+    //   "SCENE D/N PAGES"
+    //   etc.
+    // SC and SCENE are interchangeable in all patterns.
+    if (/^SC\.?\s+SET/i.test(line) || /^SCENE\s+SET/i.test(line)
+        || /^SC\.?\s+.*D\/N/i.test(line) || /^SCENE\s+.*D\/N/i.test(line)
+        || /\bSC\b.*\bSET\b/i.test(line) || /\bSCENE\b.*\bSET\b/i.test(line)
+        || /\bSC\b.*\bD\/N\b/i.test(line) || /\bSCENE\b.*\bD\/N\b/i.test(line)
+        || /\bSC\b.*\bSYNOPSIS\b/i.test(line) || /\bSCENE\b.*\bSYNOPSIS\b/i.test(line)
+        || /\bSC\b.*\bPAGE/i.test(line) || /\bSCENE\b.*\bPAGE/i.test(line)) {
       inSceneSection = true;
       continue;
     }

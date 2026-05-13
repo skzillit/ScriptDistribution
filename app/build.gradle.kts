@@ -15,19 +15,25 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "BASE_URL", "\"http://10.0.2.2:3000\"")
+        // Default BASE_URL → production Render backend. Build types override this.
+        buildConfigField("String", "BASE_URL", "\"https://script-distribution-api.onrender.com\"")
         buildConfigField("String", "ENCRYPTION_KEY", "\"your_32_char_aes_encryption_key_\"")
         buildConfigField("String", "IV_KEY", "\"your_16_char_iv_\"")
         buildConfigField("String", "IV_ENCRYPTION_SALT", "\"your_salt_hex_here\"")
     }
 
     buildTypes {
+        debug {
+            // Debug builds also hit production — change to "http://10.0.2.2:3000" for local backend on emulator
+            buildConfigField("String", "BASE_URL", "\"https://script-distribution-api.onrender.com\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "BASE_URL", "\"https://script-distribution-api.onrender.com\"")
         }
     }
     compileOptions {
