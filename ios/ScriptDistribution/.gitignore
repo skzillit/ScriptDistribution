@@ -1,0 +1,28 @@
+# Secrets (encryption keys) — never commit
+ScriptDistribution/Secrets.swift
+
+# Xcode user data
+**/xcuserdata/
+**/*.xcuserstate
+**/UserInterfaceState.xcuserstate
+xcuserdata/
+
+# Build output
+DerivedData/
+build/
+.build/
+
+# Carthage / SPM
+Carthage/Build/
+.swiftpm/
+
+# CocoaPods (not used but defensive)
+Pods/
+
+# Local IDE
+.vscode/
+*.xccheckout
+*.moved-aside
+
+# macOS
+.DS_Store
