@@ -11,6 +11,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.zillit.scriptdistribution.data.api.ApiClient
+import com.zillit.scriptdistribution.data.api.RealtimeManager
 import com.zillit.scriptdistribution.databinding.FragmentSidesBinding
 
 class SidesFragment : Fragment() {
@@ -19,6 +20,19 @@ class SidesFragment : Fragment() {
     private val viewModel: SidesViewModel by viewModels()
     private lateinit var sidesAdapter: SidesAdapter
     private var showingSides = true
+
+    // Refresh the list when the backend broadcasts a sides status change.
+    private val realtimeListener = RealtimeManager.Listener { event, data ->
+        if (event != "sides:updated") return@Listener
+        if (showingSides) viewModel.loadSides() else viewModel.loadCallSheets()
+        val status = data.optString("status")
+        val title = data.optString("title").ifBlank { "Sides" }
+        if (status == "ready") {
+            Toast.makeText(requireContext(), "Sides ready: $title", Toast.LENGTH_SHORT).show()
+        } else if (status == "error") {
+            Toast.makeText(requireContext(), "Sides failed: $title", Toast.LENGTH_LONG).show()
+        }
+    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentSidesBinding.inflate(inflater, container, false)
@@ -97,8 +111,17 @@ class SidesFragment : Fragment() {
             }
         }
 
+        // Show/hide the Generate FAB based on the current user's role.
+        // Viewer accounts can browse but can't create sides.
+        viewModel.canPost.observe(viewLifecycleOwner) { canPost ->
+            binding.fabGenerate.visibility = if (canPost) View.VISIBLE else View.GONE
+        }
+
         // Initial load
+        viewModel.loadCurrentUser()
         viewModel.loadSides()
+
+        RealtimeManager.addListener(realtimeListener)
     }
 
     private fun updateTabUI() {
@@ -123,6 +146,7 @@ class SidesFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        RealtimeManager.removeListener(realtimeListener)
         _binding = null
     }
 }

@@ -1,4 +1,5 @@
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -8,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const config = require('./config/env');
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
+const realtime = require('./realtime');
 
 // Route imports
 const authRoutes = require('./routes/auth.routes');
@@ -85,7 +87,9 @@ app.use(errorHandler);
 
 // Start server — bind port first, then connect DB (so Render health check passes)
 const port = config.port || process.env.PORT || 10000;
-app.listen(port, () => {
+const server = http.createServer(app);
+realtime.init(server);
+server.listen(port, () => {
   console.log(`Server running on port ${port}`);
   connectDB().catch(err => console.error('MongoDB connection error:', err.message));
 });

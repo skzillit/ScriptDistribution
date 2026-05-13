@@ -9,6 +9,14 @@ import Foundation
 
 enum APIService {
 
+    // MARK: - Auth
+
+    /// Returns the currently authenticated user (auto-created server-side from device id).
+    /// `user.role` is one of "admin", "editor", "viewer" — used to gate write access.
+    static func getMe() async throws -> UserResponse {
+        try await APIClient.get("/api/auth/me")
+    }
+
     // MARK: - Scripts
 
     static func getActiveScript() async throws -> ActiveScriptResponse {

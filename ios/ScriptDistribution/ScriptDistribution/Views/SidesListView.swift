@@ -31,7 +31,11 @@ struct SidesListView: View {
                     list
                 }
             }
-            generateFAB
+            // Only show the Generate FAB when the user has posting access (admin/editor).
+            // Viewer accounts can browse sides but can't create new ones.
+            if vm.canPost {
+                generateFAB
+            }
         }
         .navigationTitle("Sides")
         .navigationBarTitleDisplayMode(.large)

@@ -27,7 +27,8 @@
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.10.38",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "jest": "^29.7.0",

@@ -26,6 +26,34 @@ class SidesViewModel : ViewModel() {
     private val _error = MutableLiveData<String?>()
     val error: LiveData<String?> = _error
 
+    private val _currentUser = MutableLiveData<User?>(null)
+    val currentUser: LiveData<User?> = _currentUser
+
+    /**
+     * `true` when the user is allowed to create new sides (admin / editor).
+     * `false` for viewer accounts — hides the Generate FAB.
+     * Default permissive (true) while /auth/me is loading so the UI doesn't flash.
+     */
+    val canPost: LiveData<Boolean> = androidx.lifecycle.MediatorLiveData<Boolean>().apply {
+        value = true
+        addSource(_currentUser) { user ->
+            val role = user?.role?.lowercase().orEmpty()
+            value = role.isEmpty() || role != "viewer"
+        }
+    }
+
+    /** Loads /api/auth/me to determine role-based UI gating. Non-fatal on failure. */
+    fun loadCurrentUser() {
+        viewModelScope.launch {
+            try {
+                val res = repo.getMe()
+                if (res.isSuccessful) {
+                    _currentUser.value = res.body()?.user
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
     fun loadSides() {
         viewModelScope.launch {
             _loading.value = true

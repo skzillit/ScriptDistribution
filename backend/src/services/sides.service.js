@@ -2,6 +2,20 @@ const PDFDocument = require('pdfkit');
 const ScriptPage = require('../models/ScriptPage');
 const Sides = require('../models/Sides');
 const { uploadFile, getFileBuffer, getScriptPdfKey } = require('./storage.service');
+const realtime = require('../realtime');
+
+function emitSidesUpdated(sides) {
+  if (!sides) return;
+  realtime.broadcast('sides:updated', {
+    id: String(sides._id),
+    script: sides.script ? String(sides.script) : null,
+    callSheet: sides.callSheet ? String(sides.callSheet) : null,
+    status: sides.status,
+    title: sides.title || null,
+    error: sides.error || null,
+    updatedAt: new Date().toISOString(),
+  });
+}
 
 // pdfjs v4 legacy build requires a worker script path even in Node.
 // Point it at the worker module shipped with the package.
@@ -619,6 +633,7 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
   try {
     sides.status = 'generating';
     await sides.save();
+    emitSidesUpdated(sides);
 
     // Get all script pages sorted
     const allPages = await ScriptPage.find({ scriptVersion: versionId })
@@ -828,10 +843,12 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
 
     sides.status = 'ready';
     await sides.save();
+    emitSidesUpdated(sides);
   } catch (error) {
     sides.status = 'error';
     sides.error = error.message;
     await sides.save();
+    emitSidesUpdated(sides);
     console.error('Sides generation error:', error);
   }
 }
@@ -1122,6 +1139,7 @@ async function extractSidesWithAI(sidesId, versionId, sceneNumbers, provider) {
   try {
     sides.status = 'generating';
     await sides.save();
+    emitSidesUpdated(sides);
 
     const allPages = await ScriptPage.find({ scriptVersion: versionId }).sort({ pageNumber: 1 });
     if (!allPages.length) throw new Error('No script pages found');
@@ -1261,10 +1279,12 @@ For each scene include a summary of the action and dialogue. This is for our int
 
     sides.status = 'ready';
     await sides.save();
+    emitSidesUpdated(sides);
   } catch (error) {
     sides.status = 'error';
     sides.error = error.message;
     await sides.save();
+    emitSidesUpdated(sides);
     console.error('AI Sides extraction error:', error);
   }
 }

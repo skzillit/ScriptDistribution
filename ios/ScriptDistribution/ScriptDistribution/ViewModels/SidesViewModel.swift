@@ -20,6 +20,28 @@ final class SidesViewModel: ObservableObject {
     @Published var loading = false
     @Published var errorMessage: String?
     @Published var lastDownloadURL: URL?
+    @Published var currentUser: User?
+
+    private var realtimeListenerId: UUID?
+
+    init() {
+        // Refresh the list whenever the backend broadcasts a sides status change.
+        realtimeListenerId = RealtimeManager.shared.addListener { [weak self] event, data in
+            guard event == "sides:updated" else { return }
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                await self.reload()
+                if let status = data["status"] as? String, status == "error",
+                   let msg = data["error"] as? String {
+                    self.errorMessage = "Sides failed: \(msg)"
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let id = realtimeListenerId { RealtimeManager.shared.removeListener(id) }
+    }
 
     /// Convenience for the empty-state text.
     var isCurrentTabEmpty: Bool {
@@ -29,8 +51,31 @@ final class SidesViewModel: ObservableObject {
         }
     }
 
+    /// `true` when the user can create new sides (admin / editor / unknown role).
+    /// `false` for read-only viewer accounts — hides the Generate FAB.
+    /// Default is permissive (true) so the UI doesn't disappear before /auth/me resolves.
+    var canPost: Bool {
+        guard let role = currentUser?.role?.lowercased(), !role.isEmpty else {
+            return true
+        }
+        return role != "viewer"
+    }
+
     func loadInitial() async {
-        await reload()
+        // Load current user in parallel with sides so the FAB visibility settles fast.
+        async let userTask: () = loadCurrentUser()
+        async let dataTask: () = reload()
+        _ = await (userTask, dataTask)
+    }
+
+    /// Loads /api/auth/me — used to decide whether the Generate FAB is shown.
+    func loadCurrentUser() async {
+        do {
+            let res = try await APIService.getMe()
+            currentUser = res.user
+        } catch {
+            // Non-fatal — leave currentUser nil and fall through to permissive default.
+        }
     }
 
     /// Reloads whichever tab is currently selected.

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { sidesApi } from '../api/scripts.api';
 import { getApiBaseUrl } from '../api/client';
+import { onEvent } from '../api/socket';
 import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
 import GenerateSidesModal from '../components/sides/GenerateSidesModal';
@@ -25,6 +26,19 @@ function SidesPage() {
     queryFn: () => sidesApi.listHistory({ limit: 50 }).then(r => r.data),
     enabled: showHistory,
   });
+
+  // Real-time refresh: when the backend broadcasts a sides status change,
+  // invalidate the list so the new/updated row shows up without polling.
+  useEffect(() => {
+    const off = onEvent(({ event, data }) => {
+      if (event !== 'sides:updated') return;
+      queryClient.invalidateQueries({ queryKey: ['sides'] });
+      queryClient.invalidateQueries({ queryKey: ['sides-history'] });
+      if (data?.status === 'ready') toast.success(`Sides ready: ${data.title || 'Untitled'}`);
+      if (data?.status === 'error') toast.error(`Sides failed: ${data.error || 'unknown error'}`);
+    });
+    return off;
+  }, [queryClient]);
 
   const deleteMutation = useMutation({
     mutationFn: (id) => sidesApi.delete(id),
