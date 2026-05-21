@@ -29,6 +29,10 @@ private final class GenerateSidesViewModel: ObservableObject {
     // Form state
     @Published var callSheetPages: String = "all"
     @Published var includeSchedule: Bool = false
+    /// Seed the scene list from the call sheet. When false → custom scenes only.
+    @Published var useCallSheetScenes: Bool = true
+    /// Attach the call sheet PDF page(s) to the generated sides.
+    @Published var includeCallSheet: Bool = true
     @Published var manualScenes: String = ""
     @Published var title: String = ""
 
@@ -51,7 +55,8 @@ private final class GenerateSidesViewModel: ObservableObject {
     var finalSceneNumbers: [String] {
         var seen = Set<String>()
         var out: [String] = []
-        if let cs = latestCallSheet?.scenes {
+        // Call sheet scenes — only when the user opted to use them
+        if useCallSheetScenes, let cs = latestCallSheet?.scenes {
             for s in cs {
                 if !seen.contains(s.sceneNumber) {
                     seen.insert(s.sceneNumber)
@@ -111,9 +116,16 @@ private final class GenerateSidesViewModel: ObservableObject {
 
     /// Find the shoot day with the highest scene overlap with the call sheet.
     /// Ported verbatim from Android's `GenerateSidesDialog.computeMatchedShootDay`.
-    private func computeMatchedShootDay() {
-        guard let cs = latestCallSheet, let sc = latestSchedule else { return }
-        let csNums = Set((cs.scenes ?? []).map { $0.sceneNumber.uppercased() })
+    func computeMatchedShootDay() {
+        guard let sc = latestSchedule else { return }
+        matchedDay = nil
+        matchedSceneNumbers = []
+        extraScenes = []
+        // Match against call sheet scenes normally, or the custom scene list
+        // when "use scenes from call sheet" is turned off.
+        let csNums: Set<String> = useCallSheetScenes
+            ? Set((latestCallSheet?.scenes ?? []).map { $0.sceneNumber.uppercased() })
+            : Set(finalSceneNumbers.map { $0.uppercased() })
         guard !csNums.isEmpty else { return }
 
         var bestDay: ShootDay?
@@ -165,6 +177,8 @@ private final class GenerateSidesViewModel: ObservableObject {
             return Array(days)
         }()
 
+        let attachCallSheet = latestCallSheet != nil && includeCallSheet
+
         let req = GenerateSidesRequest(
             scriptId: script.id,
             callSheetId: latestCallSheet?.id,
@@ -172,8 +186,9 @@ private final class GenerateSidesViewModel: ObservableObject {
             sceneNumbers: finalSceneNumbers.joined(separator: ", "),
             title: title.isEmpty ? nil : title,
             mode: "manual",
-            includeCallSheet: latestCallSheet != nil,
-            callSheetPages: latestCallSheet != nil ? callSheetPages : nil,
+            includeCallSheet: attachCallSheet,
+            includeCallSheetScenes: useCallSheetScenes,
+            callSheetPages: attachCallSheet ? callSheetPages : nil,
             scheduleId: includeSched ? latestSchedule?.id : nil,
             primaryDay: includeSched ? matchedDay?.dayNumber : nil,
             matchedDays: matchedDays
@@ -292,7 +307,22 @@ struct GenerateSidesSheet: View {
                     .padding(10)
                     .background(Color(.tertiarySystemBackground))
                     .cornerRadius(8)
+                    .opacity(vm.useCallSheetScenes ? 1 : 0.5)
                 }
+
+                // Call sheet options
+                Toggle(isOn: $vm.useCallSheetScenes) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Use scenes from call sheet").font(.system(size: 13))
+                        if !vm.useCallSheetScenes {
+                            Text("Custom scenes only").font(.system(size: 10)).foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .onChange(of: vm.useCallSheetScenes) { _ in vm.computeMatchedShootDay() }
+
+                Toggle("Attach call sheet to sides PDF", isOn: $vm.includeCallSheet)
+                    .font(.system(size: 13))
             } else {
                 InfoCard(emoji: "📋", title: "No call sheet uploaded", subtitle: nil)
             }
@@ -384,13 +414,18 @@ struct GenerateSidesSheet: View {
 
     private var manualScenesSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("ADDITIONAL SCENES (MANUAL)")
+            Text(vm.useCallSheetScenes ? "ADDITIONAL SCENES (MANUAL)" : "CUSTOM SCENES (REQUIRED)")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.secondary)
             TextField("e.g. 1, 3, 5-8, 12A", text: $vm.manualScenes)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+                .onChange(of: vm.manualScenes) { _ in
+                    // In custom-scenes mode, the matched day is derived from the
+                    // manual list, so recompute as the user types.
+                    if !vm.useCallSheetScenes { vm.computeMatchedShootDay() }
+                }
         }
     }
 

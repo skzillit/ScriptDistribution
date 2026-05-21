@@ -175,6 +175,7 @@ struct GenerateSidesRequest: Codable {
     let title: String?
     let mode: String?
     let includeCallSheet: Bool?
+    let includeCallSheetScenes: Bool? // false = custom scenes only
     let callSheetPages: String?
     let scheduleId: String?
     let primaryDay: Int?

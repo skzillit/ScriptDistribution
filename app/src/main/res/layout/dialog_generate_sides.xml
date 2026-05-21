@@ -246,6 +246,30 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- ===== Call sheet options ===== -->
+        <CheckBox
+            android:id="@+id/cb_use_callsheet_scenes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="Use scenes from call sheet"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:visibility="gone"
+            app:buttonTint="@color/accent" />
+
+        <CheckBox
+            android:id="@+id/cb_include_callsheet"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:checked="true"
+            android:text="Attach call sheet to sides PDF"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:visibility="gone"
+            app:buttonTint="@color/accent" />
+
         <!-- ===== Schedule (read-only) ===== -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/card_schedule"

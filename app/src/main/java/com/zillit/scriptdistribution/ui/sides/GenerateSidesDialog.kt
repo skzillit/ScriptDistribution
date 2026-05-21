@@ -97,6 +97,12 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
         }
 
         binding.cbIncludeSchedule.setOnCheckedChangeListener { _, _ -> updateSummary() }
+        binding.cbUseCallsheetScenes.setOnCheckedChangeListener { _, _ ->
+            renderCallSheet() // dim/restore the scene chips
+            computeMatchedShootDay()
+            renderMatchedShootDay()
+            updateSummary()
+        }
         binding.etManualScenes.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateSummary() }
@@ -173,6 +179,8 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
             binding.tvCallsheetMeta.text = ""
             binding.layoutPages.visibility = View.GONE
             binding.cardCallsheetScenes.visibility = View.GONE
+            binding.cbUseCallsheetScenes.visibility = View.GONE
+            binding.cbIncludeCallsheet.visibility = View.GONE
             return
         }
 
@@ -182,9 +190,14 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
         binding.tvCallsheetMeta.text = "$sceneCount scenes$callTimeStr"
         binding.layoutPages.visibility = View.VISIBLE
 
-        // Scene chips
+        // Call sheet option toggles
+        binding.cbUseCallsheetScenes.visibility = View.VISIBLE
+        binding.cbIncludeCallsheet.visibility = View.VISIBLE
+
+        // Scene chips — dimmed when "use call sheet scenes" is off (custom-only mode)
         val scenes = cs.scenes ?: emptyList()
         binding.cardCallsheetScenes.visibility = if (scenes.isNotEmpty()) View.VISIBLE else View.GONE
+        binding.cardCallsheetScenes.alpha = if (binding.cbUseCallsheetScenes.isChecked) 1f else 0.5f
         binding.chipGroupCallsheetScenes.removeAllViews()
         for (s in scenes) {
             val chip = Chip(requireContext()).apply {
@@ -213,11 +226,22 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
         binding.cbIncludeSchedule.visibility = View.VISIBLE
     }
 
-    /** Find the shoot day with the highest scene overlap with the call sheet. */
+    /**
+     * Find the shoot day with the highest scene overlap. Matches against the
+     * call sheet's scenes normally, or the custom scene list when the user has
+     * turned off "use scenes from call sheet".
+     */
     private fun computeMatchedShootDay() {
-        val cs = latestCallSheet ?: return
         val sc = latestSchedule ?: return
-        val csNums = (cs.scenes ?: emptyList()).map { it.sceneNumber.uppercase() }.toSet()
+        matchedDay = null
+        matchedSceneNumbers = emptySet()
+        extraScenes = emptyList()
+        val useCs = binding.cbUseCallsheetScenes.isChecked
+        val csNums = if (useCs) {
+            (latestCallSheet?.scenes ?: emptyList()).map { it.sceneNumber.uppercase() }.toSet()
+        } else {
+            finalSceneNumbers().map { it.uppercase() }.toSet()
+        }
         if (csNums.isEmpty()) return
 
         var bestDay: ShootDay? = null
@@ -300,11 +324,13 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
         }
     }
 
-    /** Build the final list of scene numbers (call sheet + manual). */
+    /** Build the final list of scene numbers (call sheet + manual, or custom only). */
     private fun finalSceneNumbers(): List<String> {
         val set = linkedSetOf<String>()
-        // Call sheet scenes
-        latestCallSheet?.scenes?.forEach { it.sceneNumber.let(set::add) }
+        // Call sheet scenes — only when the user opted to use them
+        if (binding.cbUseCallsheetScenes.isChecked) {
+            latestCallSheet?.scenes?.forEach { it.sceneNumber.let(set::add) }
+        }
         // Manual input
         val manual = binding.etManualScenes.text?.toString() ?: ""
         if (manual.isNotBlank()) {
@@ -348,14 +374,18 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
             days.toList()
         } else null
 
+        val useCallSheetScenes = binding.cbUseCallsheetScenes.isChecked
+        val attachCallSheet = latestCallSheet != null && binding.cbIncludeCallsheet.isChecked
+
         val request = GenerateSidesRequest(
             scriptId = script.id,
             callSheetId = latestCallSheet?.id,
             sceneNumbers = scenes.joinToString(", "),
             title = binding.etTitle.text?.toString()?.takeIf { it.isNotBlank() },
             mode = "manual",
-            includeCallSheet = latestCallSheet != null,
-            callSheetPages = if (latestCallSheet != null) callSheetPages else null,
+            includeCallSheet = attachCallSheet,
+            includeCallSheetScenes = useCallSheetScenes,
+            callSheetPages = if (attachCallSheet) callSheetPages else null,
             scheduleId = if (includeSched) latestSchedule?.id else null,
             primaryDay = if (includeSched) matched?.dayNumber else null,
             matchedDays = matchedDaysList

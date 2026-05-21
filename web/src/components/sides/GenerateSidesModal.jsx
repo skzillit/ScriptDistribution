@@ -8,6 +8,10 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const [selectedSchedule, setSelectedSchedule] = useState('');
   const [callSheetPages, setCallSheetPages] = useState('all');
   const [includeSchedule, setIncludeSchedule] = useState(false);
+  // Attach the call sheet PDF page(s) to the generated sides (view + download).
+  const [includeCallSheetPdf, setIncludeCallSheetPdf] = useState(true);
+  // Seed the scene list from the call sheet's scenes. When false → custom scenes only.
+  const [useCallSheetScenes, setUseCallSheetScenes] = useState(true);
   const [manualScenes, setManualScenes] = useState('');
   const [pickedScenes, setPickedScenes] = useState(new Set());
   const [title, setTitle] = useState('');
@@ -80,14 +84,20 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const finalSceneNumbers = useMemo(() => {
     const set = new Set([...pickedScenes]);
     if (manualScenes.trim()) manualScenes.split(/[,;\s]+/).filter(Boolean).forEach(s => set.add(s.trim()));
-    if (selectedCallSheet && callSheetScenes.length) callSheetScenes.forEach(s => set.add(s.sceneNumber));
+    // Only seed from the call sheet when the user opted to use its scenes.
+    if (useCallSheetScenes && selectedCallSheet && callSheetScenes.length) callSheetScenes.forEach(s => set.add(s.sceneNumber));
     return [...set];
-  }, [pickedScenes, manualScenes, selectedCallSheet, callSheetScenes]);
+  }, [pickedScenes, manualScenes, selectedCallSheet, callSheetScenes, useCallSheetScenes]);
 
-  // Find the best matching shoot day + pick extra scenes from other days
+  // Find the best matching shoot day + pick extra scenes from other days.
+  // Match against call sheet scenes normally, or the custom scene list when
+  // the user has turned off "use scenes from call sheet".
   const { matchedShootDays, extraSceneInfo } = useMemo(() => {
-    if (!shootDays.length || !callSheetScenes.length) return { matchedShootDays: [], extraSceneInfo: [] };
-    const csSceneSet = new Set(callSheetScenes.map(s => String(s.sceneNumber).toUpperCase()));
+    const matchSource = useCallSheetScenes
+      ? callSheetScenes.map(s => s.sceneNumber)
+      : finalSceneNumbers;
+    if (!shootDays.length || !matchSource.length) return { matchedShootDays: [], extraSceneInfo: [] };
+    const csSceneSet = new Set(matchSource.map(s => String(s).toUpperCase()));
 
     // Find the best matching day
     let bestDay = null;
@@ -124,7 +134,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     }
 
     return { matchedShootDays: result, extraSceneInfo: extras };
-  }, [shootDays, callSheetScenes]);
+  }, [shootDays, callSheetScenes, useCallSheetScenes, finalSceneNumbers]);
 
   const handleGenerate = async () => {
     if (!activeScript) return toast.error('No active script found');
@@ -138,7 +148,8 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
         sceneNumbers: finalSceneNumbers.join(', '),
         title: title || undefined,
         mode: 'manual',
-        includeCallSheet: selectedCallSheet ? true : false,
+        includeCallSheet: selectedCallSheet && includeCallSheetPdf ? true : false,
+        includeCallSheetScenes: useCallSheetScenes,
         callSheetPages: callSheetPages,
         scheduleId: includeSchedule && selectedSchedule ? selectedSchedule : undefined,
         primaryDay: includeSchedule && matchedShootDays.length ? matchedShootDays[0].dayNumber : undefined,
@@ -203,11 +214,26 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           </div>
         )}
         {callSheetScenes.length > 0 && (
-          <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', padding: '8px', marginBottom: '12px', border: '1px solid var(--border)' }}>
+          <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', padding: '8px', marginBottom: '8px', border: '1px solid var(--border)', opacity: useCallSheetScenes ? 1 : 0.5 }}>
             <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px', fontWeight: '600' }}>Call sheet scenes:</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
               {callSheetScenes.map((s, i) => <span key={i} style={{ background: 'var(--accent-glow)', color: 'var(--accent)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', border: '1px solid var(--border)' }}>{s.sceneNumber}</span>)}
             </div>
+          </div>
+        )}
+
+        {/* Call sheet options — only when a call sheet is selected */}
+        {selectedCallSheet && callSheetDetail?.callSheet && (
+          <div style={{ marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={useCallSheetScenes} onChange={e => setUseCallSheetScenes(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+              Use scenes from call sheet
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{useCallSheetScenes ? '' : '(custom scenes only)'}</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={includeCallSheetPdf} onChange={e => setIncludeCallSheetPdf(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+              Attach call sheet to sides PDF
+            </label>
           </div>
         )}
 
@@ -282,7 +308,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
 
         {/* Manual */}
         <div style={{ marginBottom: '12px' }}>
-          <label style={L}>Additional Scenes (manual)</label>
+          <label style={L}>{useCallSheetScenes ? 'Additional Scenes (manual)' : 'Custom Scenes (required)'}</label>
           <input value={manualScenes} onChange={e => setManualScenes(e.target.value)} placeholder="e.g. 1, 3, 5-8" />
         </div>
 

@@ -441,7 +441,7 @@ async function deleteCallSheet(req, res) {
 // ====== SIDES ENDPOINTS ======
 
 async function generateSides(req, res) {
-  const { callSheetId, scriptId, versionId, sceneNumbers: manualScenes, title, mode, aiProvider, includeCallSheet, callSheetPages, scheduleId, matchedDays, primaryDay } = req.body;
+  const { callSheetId, scriptId, versionId, sceneNumbers: manualScenes, title, mode, aiProvider, includeCallSheet, includeCallSheetScenes, callSheetPages, scheduleId, matchedDays, primaryDay } = req.body;
 
   const script = await Script.findById(scriptId);
   if (!script) return res.status(404).json({ error: 'Script not found' });
@@ -450,8 +450,13 @@ async function generateSides(req, res) {
   const version = await ScriptVersion.findById(targetVersionId);
   if (!version) return res.status(404).json({ error: 'Script version not found' });
 
+  // Whether to seed the scene list from the call sheet's scenes.
+  // Default true (backwards compatible). When false, only the manually
+  // entered scenes are used — i.e. "custom scenes only" mode.
+  const useCallSheetScenes = includeCallSheetScenes !== false;
+
   let sceneNumbers = [];
-  if (callSheetId) {
+  if (callSheetId && useCallSheetScenes) {
     const callSheet = await CallSheet.findById(callSheetId);
     if (!callSheet) return res.status(404).json({ error: 'Call sheet not found' });
     sceneNumbers = callSheet.scenes.map(s => s.sceneNumber);
@@ -461,7 +466,11 @@ async function generateSides(req, res) {
     sceneNumbers = [...new Set([...sceneNumbers, ...parsed])];
   }
   if (sceneNumbers.length === 0) {
-    return res.status(400).json({ error: 'No scene numbers provided.' });
+    return res.status(400).json({
+      error: useCallSheetScenes
+        ? 'No scene numbers provided.'
+        : 'Enter at least one custom scene number.',
+    });
   }
 
   // Extract shoot day info from schedule if provided
@@ -476,9 +485,11 @@ async function generateSides(req, res) {
       // Determine primary day number
       const primaryDayNum = primaryDay ? Number(primaryDay) : (requestedDays ? [...requestedDays][0] : null);
 
-      // Get call sheet scene numbers for strict filtering on extra days
+      // Get call sheet scene numbers for strict filtering on extra days.
+      // In custom-scenes-only mode there are no call sheet scenes to honor,
+      // so fall back to the requested (custom) scene set.
       let callSheetSceneNums = sceneSet; // default to all requested scenes
-      if (callSheetId) {
+      if (callSheetId && useCallSheetScenes) {
         const cs = await CallSheet.findById(callSheetId);
         if (cs?.scenes) {
           callSheetSceneNums = new Set(cs.scenes.map(s => String(s.sceneNumber).toUpperCase()));

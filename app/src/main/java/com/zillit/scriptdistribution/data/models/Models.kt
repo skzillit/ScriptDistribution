@@ -218,6 +218,7 @@ data class GenerateSidesRequest(
     val title: String? = null,
     val mode: String? = "manual", // "manual" or "ai"
     val includeCallSheet: Boolean? = null,
+    val includeCallSheetScenes: Boolean? = null, // false = custom scenes only
     val callSheetPages: String? = null,
     val scheduleId: String? = null,
     val primaryDay: Int? = null,
