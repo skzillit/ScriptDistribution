@@ -188,39 +188,6 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
             {'\uD83D\uDCCB'} No call sheet uploaded
           </div>
         )}
-        {selectedCallSheet && callSheetDetail?.callSheet && (
-          <div style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 0' }}>
-            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Include pages:</span>
-            <div style={{ display: 'flex', gap: '4px' }}>
-              {['all', '1', '2', '3'].map(opt => (
-                <button key={opt} onClick={() => setCallSheetPages(opt)}
-                  style={{
-                    padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
-                    cursor: 'pointer', border: '1px solid', transition: 'all 0.15s',
-                    background: callSheetPages === opt ? 'var(--accent)' : 'var(--bg-card)',
-                    color: callSheetPages === opt ? 'white' : 'var(--text-secondary)',
-                    borderColor: callSheetPages === opt ? 'var(--accent)' : 'var(--border)',
-                  }}>
-                  {opt === 'all' ? 'All' : `Page ${opt}`}
-                </button>
-              ))}
-              <input
-                type="number" min="1" max="20" placeholder="Custom"
-                value={!['all','1','2','3'].includes(callSheetPages) ? callSheetPages : ''}
-                onChange={e => setCallSheetPages(e.target.value || 'all')}
-                style={{ width: '70px', padding: '4px 8px', fontSize: '11px', borderRadius: '6px', textAlign: 'center' }}
-              />
-            </div>
-          </div>
-        )}
-        {callSheetScenes.length > 0 && (
-          <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', padding: '8px', marginBottom: '8px', border: '1px solid var(--border)', opacity: useCallSheetScenes ? 1 : 0.5 }}>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px', fontWeight: '600' }}>Call sheet scenes:</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
-              {callSheetScenes.map((s, i) => <span key={i} style={{ background: 'var(--accent-glow)', color: 'var(--accent)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', border: '1px solid var(--border)' }}>{s.sceneNumber}</span>)}
-            </div>
-          </div>
-        )}
 
         {/* Call sheet options — only when a call sheet is selected */}
         {selectedCallSheet && callSheetDetail?.callSheet && (
@@ -257,53 +224,6 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
             <input type="checkbox" checked={includeSchedule} onChange={e => setIncludeSchedule(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
             Include Schedule in sides
           </label>
-        )}
-
-        {selectedSchedule && matchedShootDays.length > 0 && (
-          <div style={{ marginBottom: '12px' }}>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Matched Shoot Day
-            </div>
-            <div style={{ background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', overflow: 'hidden' }}>
-              {matchedShootDays.map((day, i) => (
-                <div key={i} style={{ padding: '10px 14px', borderBottom: i < matchedShootDays.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                    <span style={{ fontWeight: '700', fontSize: '13px', color: 'var(--accent)' }}>{'\uD83D\uDCC5'} Day {day.dayNumber}</span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                      {day.date}{day.callTime ? ` \u00B7 ${day.callTime}` : ''}{day.location ? ` \u00B7 ${day.location}` : ''}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
-                    {day.matchedScenes.map((s, j) => (
-                      <span key={j} style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '10px', background: 'var(--accent-glow)', color: 'var(--accent)', border: '1px solid var(--border)' }}>
-                        {s.sceneNumber} {s.location?.slice(0, 15)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Extra scenes from call sheet not in this day */}
-            {extraSceneInfo.length > 0 && (
-              <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', background: 'rgba(255, 87, 34, 0.05)' }}>
-                <div style={{ fontSize: '10px', color: 'var(--warning)', fontWeight: '700', marginBottom: '6px', textTransform: 'uppercase' }}>
-                  Extra scenes (not in Day {matchedShootDays[0]?.dayNumber} — pulled from other days)
-                </div>
-                {extraSceneInfo.map((ex, j) => (
-                  <div key={j} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '3px 0', fontSize: '11px' }}>
-                    <span style={{ fontWeight: '700', color: 'var(--accent)' }}>Sc. {ex.sceneNumber}</span>
-                    <span style={{ color: 'var(--text-secondary)' }}>
-                      {ex.scene?.intExt} {ex.scene?.location?.slice(0, 25)} {ex.scene?.timeOfDay ? `- ${ex.scene.timeOfDay}` : ''}
-                    </span>
-                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '1px 6px', borderRadius: '4px' }}>
-                      from Day {ex.dayNumber}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         )}
 
         {/* Manual */}

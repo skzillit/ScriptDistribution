@@ -226,7 +226,6 @@ struct GenerateSidesSheet: View {
                         scriptCard
                         callSheetSection
                         scheduleSection
-                        matchedDaySection
                         manualScenesSection
                         summaryCard
                         titleSection
@@ -283,33 +282,6 @@ struct GenerateSidesSheet: View {
             if let cs = vm.latestCallSheet {
                 InfoCard(emoji: "📋", title: cs.title, subtitle: callSheetSubtitle(cs))
 
-                HStack(spacing: 8) {
-                    Text("Include pages:")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                    Picker("Pages", selection: $vm.callSheetPages) {
-                        Text("All").tag("all")
-                        Text("1").tag("1")
-                        Text("2").tag("2")
-                        Text("3").tag("3")
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 240)
-                }
-
-                if let scenes = cs.scenes, !scenes.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("CALL SHEET SCENES")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.secondary)
-                        ChipRow(items: scenes.map(\.sceneNumber))
-                    }
-                    .padding(10)
-                    .background(Color(.tertiarySystemBackground))
-                    .cornerRadius(8)
-                    .opacity(vm.useCallSheetScenes ? 1 : 0.5)
-                }
-
                 // Call sheet options
                 Toggle(isOn: $vm.useCallSheetScenes) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -352,65 +324,6 @@ struct GenerateSidesSheet: View {
         }
     }
 
-    private var matchedDaySection: some View {
-        Group {
-            if let day = vm.matchedDay, vm.includeSchedule {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("MATCHED SHOOT DAY")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.secondary)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("📅 Day \(day.dayNumber.map(String.init) ?? "?")")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(.accentColor)
-                        if !matchedDayMeta(day).isEmpty {
-                            Text(matchedDayMeta(day))
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                        if !vm.matchedSceneNumbers.isEmpty {
-                            ChipRow(items: vm.matchedSceneNumbers)
-                        }
-
-                        if !vm.extraScenes.isEmpty {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("EXTRA SCENES (FROM OTHER DAYS)")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.orange)
-                                    .padding(.top, 6)
-                                ForEach(vm.extraScenes) { ex in
-                                    Text(extraSceneRow(ex))
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemBackground))
-                    .cornerRadius(10)
-                }
-            }
-        }
-    }
-
-    private func matchedDayMeta(_ day: ShootDay) -> String {
-        var parts: [String] = []
-        if let d = day.date, !d.isEmpty { parts.append(d) }
-        if let c = day.callTime, !c.isEmpty { parts.append(c) }
-        if let l = day.location, !l.isEmpty { parts.append(l) }
-        return parts.joined(separator: " · ")
-    }
-
-    private func extraSceneRow(_ ex: GenerateSidesViewModel.ExtraScene) -> String {
-        let info = (ex.day.scenes ?? []).first { $0.sceneNumber?.uppercased() == ex.sceneNumber }
-        let intExt = info?.intExt ?? ""
-        let location = info?.location?.prefix(25) ?? ""
-        let dayNum = ex.day.dayNumber.map(String.init) ?? "?"
-        return "Sc. \(ex.sceneNumber) — \(intExt) \(location)  (Day \(dayNum))"
-    }
 
     private var manualScenesSection: some View {
         VStack(alignment: .leading, spacing: 4) {
