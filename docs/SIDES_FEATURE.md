@@ -150,15 +150,15 @@ When the producer hits "+", she sees a panel with these sections, top to bottom:
 
 1. **Script card** — shows which script is currently active. Not editable here.
 2. **Call sheet card** — the latest one uploaded. Not editable here.
-3. **Page selector** — pick how many sides pages per scene (1, 2, 3, or "All"). Usually "All".
-4. **Scene chips** — bubbles showing the scene numbers the call sheet says are being shot. Tap to deselect.
-5. **Schedule card** — the latest schedule. Toggle off if you don't want it in the booklet.
-6. **Matched shoot day** — the app tries to guess which day of the schedule today is. It does this by comparing the call sheet's scenes against each day's scenes and picking the day with the most overlap.
-7. **Extra scenes from other days** — if the call sheet has scenes that belong to a different shoot day in the schedule, they show up here so you know there's a mismatch.
-8. **Manual scenes** — a text box if you want to add scenes the call sheet missed (e.g. "5A, 12B").
-9. **Live summary** — at the bottom, a one-liner: "10 scenes: 9, 107, 108… + 1 shoot day."
-10. **Title** — what to call this sides booklet (optional; defaults to "Sides for Day X").
-11. **Generate button** — submits.
+3. **"Use scenes from call sheet" toggle** — ON (default) builds sides from the call sheet's scenes; OFF ignores them and uses only the scenes you type manually ("custom scenes only" mode).
+4. **"Attach call sheet to sides PDF" toggle** — ON (default) places the call sheet at the front of the booklet (in both View and Download); OFF leaves it out.
+5. **Schedule card** — the latest schedule, with an **"Include Schedule in sides"** toggle. The matching shoot day is detected automatically — there's nothing to pick.
+6. **Manual scenes** — a text box to add extra scenes (e.g. "5A, 12B"). In custom-only mode this is the required scene source.
+7. **Live summary** — at the bottom, a one-liner: "10 scenes: 9, 107, 108… + 1 shoot day."
+8. **Title** — what to call this sides booklet (optional; defaults to "Sides for Day X").
+9. **Generate button** — submits.
+
+> **Note:** the call-sheet **page selector**, the **scene chips**, and the **"Matched Shoot Day" / "extra scenes"** display were removed from the panel to keep it simple. The call sheet is always included in full ("all" pages), and the matched shoot day is still computed under the hood — it's just no longer shown.
 
 ---
 
@@ -294,6 +294,17 @@ Zone ratios live in `sides.service.js`: script `top=3% bottom=4%`, schedule `top
 | POST | `/api/sides` | Generate sides |
 | GET | `/api/sides/:id/view` | HTML page with embedded pdf.js viewer |
 | GET | `/api/sides/:id/download` | Signed URL for the merged PDF (call sheet + sides) |
+
+**`POST /api/sides` — key request flags:**
+
+| Field | Meaning |
+|---|---|
+| `callSheetId`, `scriptId`, `scheduleId` | Source documents |
+| `sceneNumbers` | Manually entered scenes (comma string or array) |
+| `includeCallSheetScenes` | Default `true`. When `false`, the call sheet's scenes are **not** seeded — only `sceneNumbers` are used ("custom scenes only"). Handled in `sides.controller.js#generateSides`. |
+| `includeCallSheet` | Default `true`. When `false`, the call sheet PDF is **not** attached in view/download. |
+| `callSheetPages` | Always `"all"` from the clients now (the selector UI was removed). |
+| `primaryDay`, `matchedDays` | Schedule shoot-day info, still computed client-side even though the "Matched Shoot Day" panel was removed. |
 
 ## E. Role gating
 

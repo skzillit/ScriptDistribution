@@ -282,6 +282,33 @@ struct GenerateSidesSheet: View {
             if let cs = vm.latestCallSheet {
                 InfoCard(emoji: "📋", title: cs.title, subtitle: callSheetSubtitle(cs))
 
+                HStack(spacing: 8) {
+                    Text("Include pages:")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    Picker("Pages", selection: $vm.callSheetPages) {
+                        Text("All").tag("all")
+                        Text("1").tag("1")
+                        Text("2").tag("2")
+                        Text("3").tag("3")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+                }
+
+                if let scenes = cs.scenes, !scenes.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("CALL SHEET SCENES")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.secondary)
+                        ChipRow(items: scenes.map(\.sceneNumber))
+                    }
+                    .padding(10)
+                    .background(Color(.tertiarySystemBackground))
+                    .cornerRadius(8)
+                    .opacity(vm.useCallSheetScenes ? 1 : 0.5)
+                }
+
                 // Call sheet options
                 Toggle(isOn: $vm.useCallSheetScenes) {
                     VStack(alignment: .leading, spacing: 1) {

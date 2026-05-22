@@ -786,8 +786,10 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
       sides._sceneImages = null;
     }
 
-    // If neither the PDF-based nor text-based scene detection found anything, fail.
-    if (!imageRenderingSucceeded && matchedScenes.length === 0) {
+    // If neither the PDF-based nor text-based scene detection found anything, fail —
+    // unless the user pulled in scene folders, which can stand alone as the content.
+    const hasFolders = Array.isArray(sides.sceneFolders) && sides.sceneFolders.length > 0;
+    if (!imageRenderingSucceeded && matchedScenes.length === 0 && !hasFolders) {
       const available = sceneMap.map(s => s.sceneNumber).join(', ');
       throw new Error(
         `No matching scenes found for: ${[...requestedScenes].join(', ')}. `
@@ -835,6 +837,7 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
     }
 
     // Generate PDF
+    await attachFolderImages(sides);
     const { buffer: pdfBuffer, scheduleStartPage: schedPage } = await generateSidesPdf(sides);
     const s3Key = `sides/${sides.script}/${sides._id}/sides.pdf`;
     await uploadFile(s3Key, pdfBuffer, 'application/pdf');
@@ -900,10 +903,13 @@ function generateSidesPdf(sides) {
     const X_CHAR = X_LEFT + (PAGE_W - W_CHAR) / 2;   // centered character name x
     const X_PAREN = X_LEFT + (PAGE_W - W_PAREN) / 2; // centered parenthetical x
 
-    // Build a quick lookup of pre-rendered scene images by sceneNumber
-    const imagesBySceneNumber = {};
+    // Build a quick lookup of pre-rendered scene images. In single-version mode
+    // entries are keyed by sceneNumber; in multi-version mode each entry carries a
+    // composite `key` (groupIndex:sceneNumber) so identical scene numbers from
+    // different versions don't collide.
+    const imagesByKey = {};
     if (Array.isArray(sides._sceneImages)) {
-      for (const si of sides._sceneImages) imagesBySceneNumber[si.sceneNumber] = si.images || [];
+      for (const si of sides._sceneImages) imagesByKey[si.key || si.sceneNumber] = si.images || [];
     }
 
     const PAGE_BOTTOM = 750;
@@ -911,7 +917,18 @@ function generateSidesPdf(sides) {
     let prevType = '';
 
     for (const scene of sides.scenes) {
-      const sceneImages = imagesBySceneNumber[scene.sceneNumber];
+      const lookupKey = scene.imageKey || scene.sceneNumber;
+      const sceneImages = imagesByKey[lookupKey];
+
+      // In multi-version sides, print which version this scene came from so the
+      // crew can tell a revised page apart from an older one.
+      if (scene.sourceVersionLabel) {
+        if (y > PAGE_BOTTOM - 30) { doc.addPage(); y = 55; }
+        doc.font('Courier-Bold').fontSize(9).fillColor('#1565C0');
+        doc.text(`${scene.sourceVersionLabel} — Scene ${scene.sceneNumber}`, 60, y, { width: 492 });
+        doc.fillColor('#000000').font('Courier').fontSize(12);
+        y += 14;
+      }
 
       if (sceneImages && sceneImages.length > 0) {
         // ─── IMAGE PATH: embed cropped page images ───
@@ -1011,6 +1028,52 @@ function generateSidesPdf(sides) {
       }
       doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
       y += 16;
+    }
+
+    // ─── Scene folders ("Pages") section ───
+    // Each pulled-in ScenePage contributes its uploaded PDF pages under a
+    // colored, titled header (scene number) and optional description.
+    if (Array.isArray(sides._folderImages) && sides._folderImages.length) {
+      for (const folder of sides._folderImages) {
+        if (y > PAGE_BOTTOM - 60) { doc.addPage(); y = 55; }
+        // Color swatch + title
+        const sw = 12;
+        const safeColor = /^#[0-9a-fA-F]{3,8}$/.test(folder.color || '') ? folder.color : '#9e9e9e';
+        doc.save();
+        doc.rect(60, y, sw, sw).fill(safeColor);
+        doc.restore();
+        doc.fillColor('#000000').font('Courier-Bold').fontSize(13);
+        doc.text(`Scene ${folder.sceneNumber}`, 60 + sw + 8, y, { width: 492 - sw - 8 });
+        y += 18;
+        if (folder.description) {
+          doc.font('Courier').fontSize(10).fillColor('#555555');
+          doc.text(folder.description, 60, y, { width: 492 });
+          y += doc.heightOfString(folder.description, { width: 492 }) + 4;
+          doc.fillColor('#000000');
+        }
+        // Page images
+        for (const imgBuffer of (folder.images || [])) {
+          let img;
+          try { img = doc.openImage(imgBuffer); } catch (e) { continue; }
+          const targetH = (img.height / img.width) * TARGET_W;
+          const maxH = PAGE_BOTTOM - 55;
+          if (targetH > (PAGE_BOTTOM - y)) { doc.addPage(); y = 55; }
+          if (targetH > maxH) {
+            const scaledH = maxH;
+            const scaledW = (img.width / img.height) * scaledH;
+            const xCentered = 60 + (TARGET_W - scaledW) / 2;
+            doc.image(imgBuffer, xCentered, y, { width: scaledW, height: scaledH });
+            y += scaledH + 8;
+          } else {
+            doc.image(imgBuffer, 60, y, { width: TARGET_W });
+            y += targetH + 8;
+          }
+        }
+        y += 4;
+        if (y > PAGE_BOTTOM) { doc.addPage(); y = 55; }
+        doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
+        y += 16;
+      }
     }
 
     // Mark where schedule section starts (1-based page number within the sides PDF).
@@ -1271,6 +1334,7 @@ For each scene include a summary of the action and dialogue. This is for our int
     }
 
     // Generate PDF
+    await attachFolderImages(sides);
     const { buffer: pdfBuffer, scheduleStartPage: schedPage } = await generateSidesPdf(sides);
     const s3Key = `sides/${sides.script}/${sides._id}/sides.pdf`;
     await uploadFile(s3Key, pdfBuffer, 'application/pdf');
@@ -1289,4 +1353,198 @@ For each scene include a summary of the action and dialogue. This is for our int
   }
 }
 
-module.exports = { extractSides, extractSidesWithAI, generateSidesPdf, buildSceneMap, buildPdfSceneMap };
+/**
+ * Render the day's shooting-schedule scenes as cropped images and attach them
+ * to `sides._scheduleImages`. Shared by the single- and multi-version paths.
+ * Non-fatal: any failure just leaves the schedule images unset.
+ */
+async function attachScheduleImages(sides) {
+  try {
+    if (!sides.shootingSchedule) return;
+    const ShootingSchedule = require('../models/ShootingSchedule');
+    const schedule = await ShootingSchedule.findById(sides.shootingSchedule);
+    if (!schedule?.pdfUrl) return;
+
+    const schedPdfBuffer = await getFileBuffer(schedule.pdfUrl);
+    const schedSceneMap = await buildSchedulePdfSceneMap(schedPdfBuffer);
+
+    const pdfjsMod = await loadPdfjs();
+    const schedProbe = await pdfjsMod.getDocument({
+      data: bufferToUint8(schedPdfBuffer),
+      disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+    }).promise;
+    const schedTotalPages = schedProbe.numPages;
+    await schedProbe.destroy();
+
+    const schedRequestedScenes = new Set();
+    for (const day of sides.shootDayInfo || []) {
+      for (const s of day.scenes || []) {
+        if (s.sceneNumber) schedRequestedScenes.add(String(s.sceneNumber).toUpperCase().replace(/PT$/, ''));
+      }
+    }
+
+    const schedSpecs = buildRenderSpecs(schedSceneMap, schedRequestedScenes, schedTotalPages);
+    if (schedSpecs.length > 0) {
+      sides._scheduleImages = await renderSceneImages(schedPdfBuffer, schedSpecs, {
+        topZoneRatio: 0.10,
+        bottomZoneRatio: 0.05,
+      });
+    }
+  } catch (err) {
+    console.warn('[sides] Schedule image rendering failed:', err.message);
+    sides._scheduleImages = null;
+  }
+}
+
+/** Render every page of a (small) PDF buffer to PNG image buffers at 2x. */
+async function renderPdfPagesToImages(pdfBuffer, maxPages = 30) {
+  const { createCanvas } = require('@napi-rs/canvas');
+  const pdfjs = await loadPdfjs();
+  const pdf = await pdfjs.getDocument({
+    data: bufferToUint8(pdfBuffer),
+    disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+  }).promise;
+  const SCALE = 2;
+  const images = [];
+  const n = Math.min(pdf.numPages, maxPages);
+  for (let p = 1; p <= n; p++) {
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale: SCALE });
+    const canvas = createCanvas(viewport.width, viewport.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, viewport.width, viewport.height);
+    await page.render({ canvasContext: ctx, viewport, background: 'white' }).promise;
+    images.push(canvas.toBuffer('image/png'));
+  }
+  await pdf.destroy();
+  return images;
+}
+
+/**
+ * Render each pulled-in scene folder's PDF to images and attach to
+ * `sides._folderImages`. Shared by all extraction paths. Non-fatal per folder.
+ */
+async function attachFolderImages(sides) {
+  if (!Array.isArray(sides.sceneFolders) || sides.sceneFolders.length === 0) return;
+  const out = [];
+  for (const folder of sides.sceneFolders) {
+    if (!folder.pdfUrl) continue;
+    try {
+      const buf = await getFileBuffer(folder.pdfUrl);
+      const images = await renderPdfPagesToImages(buf);
+      out.push({
+        sceneNumber: folder.sceneNumber,
+        color: folder.color,
+        description: folder.description,
+        images,
+      });
+    } catch (e) {
+      console.warn(`[sides] scene folder render failed for "${folder.sceneNumber}": ${e.message}`);
+    }
+  }
+  sides._folderImages = out;
+}
+
+/**
+ * Extract sides pulling scenes from MULTIPLE script versions at once.
+ *
+ * `versionGroups` is an array of { versionId, versionLabel, sceneNumbers[] }.
+ * Each scene is rendered as a cropped image from ITS OWN version's PDF and tagged
+ * with a composite imageKey (groupIndex:sceneNumber) plus a version label so the
+ * final booklet shows provenance and identical scene numbers never collide.
+ */
+async function extractSidesMultiVersion(sidesId, versionGroups) {
+  const sides = await Sides.findById(sidesId);
+  if (!sides) return;
+
+  try {
+    sides.status = 'generating';
+    await sides.save();
+    emitSidesUpdated(sides);
+
+    const pdfjs = await loadPdfjs();
+    const normalizeSceneNumber = (s) => String(s).trim().toUpperCase().replace(/PT$/, '');
+
+    const allScenes = [];        // -> sides.scenes
+    const allSceneImages = [];   // -> sides._sceneImages (each has composite `key`)
+
+    for (let gi = 0; gi < versionGroups.length; gi++) {
+      const group = versionGroups[gi];
+      const requested = new Set((group.sceneNumbers || []).map(normalizeSceneNumber));
+      if (requested.size === 0) continue;
+
+      const label = group.versionLabel || `v?`;
+      let pdfBuffer;
+      try {
+        pdfBuffer = await getFileBuffer(getScriptPdfKey(sides.script, group.versionId));
+      } catch (e) {
+        console.warn(`[sides:multi] could not load PDF for version ${group.versionId}: ${e.message}`);
+        continue;
+      }
+
+      const pdfSceneMap = await buildPdfSceneMap(pdfBuffer);
+      const probeDoc = await pdfjs.getDocument({
+        data: bufferToUint8(pdfBuffer),
+        disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+      }).promise;
+      const totalPages = probeDoc.numPages;
+      await probeDoc.destroy();
+
+      const renderSpecs = buildRenderSpecs(pdfSceneMap, requested, totalPages);
+      if (renderSpecs.length === 0) {
+        console.warn(`[sides:multi] no specs for version ${label}, requested ${[...requested].join(', ')}`);
+        continue;
+      }
+
+      const sceneImages = await renderSceneImages(pdfBuffer, renderSpecs);
+
+      for (const spec of renderSpecs) {
+        const key = `${gi}:${spec.sceneNumber}`;
+        allScenes.push({
+          sceneNumber: spec.sceneNumber,
+          heading: `${spec.sceneNumber} ${spec.heading.replace(/^\s*\d+[A-Za-z]?\s+/, '').replace(/\s+\d+[A-Za-z]?\s*$/, '').trim()}`,
+          rawText: '',
+          pageStart: spec.startPage,
+          pageEnd: spec.endPage,
+          sourceVersion: group.versionId,
+          sourceVersionLabel: label,
+          imageKey: key,
+        });
+      }
+      for (const si of sceneImages) {
+        allSceneImages.push({ key: `${gi}:${si.sceneNumber}`, sceneNumber: si.sceneNumber, images: si.images });
+      }
+    }
+
+    if (allScenes.length === 0) {
+      throw new Error('No matching scenes found in the selected versions.');
+    }
+
+    sides.scenes = allScenes;
+    sides.totalScenes = allScenes.length;
+    sides.sceneNumbers = allScenes.map(s => s.sceneNumber);
+    sides._sceneImages = allSceneImages;
+
+    await attachScheduleImages(sides);
+
+    await attachFolderImages(sides);
+    const { buffer: pdfBuffer, scheduleStartPage: schedPage } = await generateSidesPdf(sides);
+    const s3Key = `sides/${sides.script}/${sides._id}/sides.pdf`;
+    await uploadFile(s3Key, pdfBuffer, 'application/pdf');
+    sides.scheduleStartPage = schedPage;
+    sides.pdfUrl = s3Key;
+
+    sides.status = 'ready';
+    await sides.save();
+    emitSidesUpdated(sides);
+  } catch (error) {
+    sides.status = 'error';
+    sides.error = error.message;
+    await sides.save();
+    emitSidesUpdated(sides);
+    console.error('Multi-version sides extraction error:', error);
+  }
+}
+
+module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap };

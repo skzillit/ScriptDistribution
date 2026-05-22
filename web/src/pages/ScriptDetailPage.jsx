@@ -5,6 +5,7 @@ import { scriptsApi, breakdownApi } from '../api/scripts.api';
 import { getApiBaseUrl } from '../api/client';
 import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
+import PagesSection from '../components/scripts/PagesSection';
 
 function ScriptDetailPage() {
   const { id } = useParams();
@@ -104,6 +105,9 @@ function ScriptDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Pages (scene folders) */}
+      <PagesSection scriptId={id} />
 
       {/* Scenes */}
       {versionId && <ScenesSection versionId={versionId} />}

@@ -6,11 +6,13 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.google.android.material.chip.Chip
 import com.zillit.scriptdistribution.R
 import com.zillit.scriptdistribution.data.api.ApiClient
 import com.zillit.scriptdistribution.data.models.CallSheet
@@ -81,9 +83,22 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        // Call sheet pages always defaults to "all" (selector hidden).
+        // Page toggle group
+        binding.btnPageAll.isChecked = true
+        binding.togglePages.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            callSheetPages = when (checkedId) {
+                R.id.btn_page_all -> "all"
+                R.id.btn_page_1 -> "1"
+                R.id.btn_page_2 -> "2"
+                R.id.btn_page_3 -> "3"
+                else -> "all"
+            }
+        }
+
         binding.cbIncludeSchedule.setOnCheckedChangeListener { _, _ -> updateSummary() }
         binding.cbUseCallsheetScenes.setOnCheckedChangeListener { _, _ ->
+            renderCallSheet() // dim/restore the scene chips
             computeMatchedShootDay()
             updateSummary()
         }
@@ -160,6 +175,8 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
         if (cs == null) {
             binding.tvCallsheetTitle.text = "No call sheet uploaded"
             binding.tvCallsheetMeta.text = ""
+            binding.layoutPages.visibility = View.GONE
+            binding.cardCallsheetScenes.visibility = View.GONE
             binding.cbUseCallsheetScenes.visibility = View.GONE
             binding.cbIncludeCallsheet.visibility = View.GONE
             return
@@ -169,10 +186,29 @@ class GenerateSidesDialog : BottomSheetDialogFragment() {
         val sceneCount = cs.scenes?.size ?: 0
         val callTimeStr = cs.crewCall?.let { " · Call: $it" } ?: ""
         binding.tvCallsheetMeta.text = "$sceneCount scenes$callTimeStr"
+        binding.layoutPages.visibility = View.VISIBLE
 
         // Call sheet option toggles
         binding.cbUseCallsheetScenes.visibility = View.VISIBLE
         binding.cbIncludeCallsheet.visibility = View.VISIBLE
+
+        // Scene chips — dimmed when "use call sheet scenes" is off (custom-only mode)
+        val scenes = cs.scenes ?: emptyList()
+        binding.cardCallsheetScenes.visibility = if (scenes.isNotEmpty()) View.VISIBLE else View.GONE
+        binding.cardCallsheetScenes.alpha = if (binding.cbUseCallsheetScenes.isChecked) 1f else 0.5f
+        binding.chipGroupCallsheetScenes.removeAllViews()
+        for (s in scenes) {
+            val chip = Chip(requireContext()).apply {
+                text = s.sceneNumber
+                isClickable = false
+                isCheckable = false
+                chipMinHeight = 24f * resources.displayMetrics.density
+                textSize = 10f
+                setChipBackgroundColorResource(R.color.bg_card)
+                setTextColor(resources.getColor(R.color.accent, null))
+            }
+            binding.chipGroupCallsheetScenes.addView(chip)
+        }
     }
 
     private fun renderSchedule() {

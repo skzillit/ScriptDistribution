@@ -7,6 +7,10 @@ const sidesSceneSchema = new mongoose.Schema({
   htmlContent: String,
   pageStart: Number,         // which script page this scene starts on
   pageEnd: Number,           // which script page this scene ends on
+  // Provenance — set only when sides are pulled from multiple script versions.
+  sourceVersion: { type: mongoose.Schema.Types.ObjectId, ref: 'ScriptVersion' },
+  sourceVersionLabel: String, // e.g. "v3" or "Blue Revision" — shown in the PDF
+  imageKey: String,           // unique key tying this scene to its rendered image group
 }, { _id: false });
 
 const sidesSchema = new mongoose.Schema({
@@ -16,6 +20,14 @@ const sidesSchema = new mongoose.Schema({
   script: { type: mongoose.Schema.Types.ObjectId, ref: 'Script', required: true },
   title: { type: String, required: true },
   sceneNumbers: [String],
+  // Multi-version selection: pull specific scenes from specific script versions.
+  // Empty for the common single-version case (then scriptVersion + sceneNumbers apply).
+  versionScenes: [{
+    scriptVersion: { type: mongoose.Schema.Types.ObjectId, ref: 'ScriptVersion' },
+    versionLabel: String,
+    sceneNumbers: [String],
+    _id: false,
+  }],
   scenes: [sidesSceneSchema], // Extracted scene text (not whole pages)
   totalScenes: Number,
   shootDayInfo: [{
@@ -25,6 +37,16 @@ const sidesSchema = new mongoose.Schema({
     wrapTime: String,
     location: String,
     scenes: [mongoose.Schema.Types.Mixed],
+  }],
+  // Scene "folders" (ScenePage) pulled into this sides booklet — each contributes
+  // its uploaded PDF pages under a colored, titled header.
+  sceneFolders: [{
+    scenePage: { type: mongoose.Schema.Types.ObjectId, ref: 'ScenePage' },
+    sceneNumber: String,
+    color: String,
+    description: String,
+    pdfUrl: String,
+    _id: false,
   }],
   includeCallSheet: { type: Boolean, default: true },
   callSheetPages: { type: String, default: 'all' },

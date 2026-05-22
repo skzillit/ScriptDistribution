@@ -1,7 +1,72 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { scriptsApi, callSheetApi, sidesApi, scheduleApi } from '../../api/scripts.api';
+import { scriptsApi, callSheetApi, sidesApi, scheduleApi, scenePagesApi } from '../../api/scripts.api';
 import { toast } from 'react-toastify';
+
+/**
+ * One collapsible row per script version. Lazily loads that version's scenes
+ * (only when expanded) and lets the user toggle individual scenes. Selection is
+ * lifted to the parent via callbacks so it survives collapse/expand.
+ */
+function VersionScenePicker({ version, isCurrent, picked, onToggleScene, onSelectAll, onClear }) {
+  const [open, setOpen] = useState(isCurrent);
+  const { data, isLoading } = useQuery({
+    queryKey: ['version-scenes', version._id],
+    queryFn: () => scriptsApi.getScenes(version._id).then(r => r.data),
+    enabled: open,
+  });
+  const scenes = data?.scenes || [];
+  const label = version.versionLabel || `v${version.versionNumber}`;
+  const pickedSet = new Set(picked);
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: '8px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+      <div onClick={() => setOpen(o => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer' }}>
+        <span style={{ fontSize: '11px', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', color: 'var(--text-muted)' }}>{'▶'}</span>
+        <span style={{ fontWeight: '700', fontSize: '13px', color: 'var(--text-primary)' }}>{label}</span>
+        {isCurrent && <span style={{ fontSize: '9px', color: 'var(--accent)', background: 'var(--accent-glow)', padding: '1px 6px', borderRadius: '4px' }}>CURRENT</span>}
+        <span style={{ flex: 1 }} />
+        {picked.length > 0 && <span style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '600' }}>{picked.length} selected</span>}
+      </div>
+      {open && (
+        <div style={{ padding: '0 12px 10px' }}>
+          {isLoading ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>Loading scenes…</div>
+          ) : scenes.length === 0 ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>No scenes detected.</div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '6px' }}>
+                <button type="button" onClick={() => onSelectAll(scenes.map(s => s.sceneNumber))}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '11px', cursor: 'pointer', padding: 0 }}>Select all</button>
+                <button type="button" onClick={onClear}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '11px', cursor: 'pointer', padding: 0 }}>Clear</button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {scenes.map((s, i) => {
+                  const on = pickedSet.has(s.sceneNumber);
+                  return (
+                    <button key={i} type="button" title={s.heading || ''} onClick={() => onToggleScene(s.sceneNumber)}
+                      style={{
+                        padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+                        border: '1px solid', transition: 'all .12s',
+                        background: on ? 'var(--accent)' : 'var(--bg-card)',
+                        color: on ? 'white' : 'var(--text-secondary)',
+                        borderColor: on ? 'var(--accent)' : 'var(--border)',
+                      }}>
+                      {s.sceneNumber}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const [selectedCallSheet, setSelectedCallSheet] = useState(preSelectedCallSheet || '');
@@ -16,6 +81,12 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const [pickedScenes, setPickedScenes] = useState(new Set());
   const [title, setTitle] = useState('');
   const [generating, setGenerating] = useState(false);
+  // Multi-version mode: pick specific scenes from specific script versions.
+  const [multiMode, setMultiMode] = useState(false);
+  // Map of versionId -> array of picked scene numbers.
+  const [versionPicks, setVersionPicks] = useState({});
+  // Scene folders ("Pages") selected to pull into the booklet.
+  const [selectedFolderIds, setSelectedFolderIds] = useState(new Set());
 
   // Get active script (auto-selected, no manual choice needed)
   const { data: activeData } = useQuery({
@@ -54,6 +125,44 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     queryFn: () => scheduleApi.get(selectedSchedule).then(r => r.data),
     enabled: !!selectedSchedule,
   });
+
+  // All versions of the active script — loaded only in multi-version mode.
+  const { data: versionsData } = useQuery({
+    queryKey: ['script-versions', activeScript?._id],
+    queryFn: () => scriptsApi.listVersions(activeScript._id).then(r => r.data),
+    enabled: multiMode && !!activeScript?._id,
+  });
+  const versions = versionsData?.versions || [];
+
+  // Scene folders ("Pages") belonging to the active script.
+  const { data: foldersData } = useQuery({
+    queryKey: ['scene-pages', activeScript?._id],
+    queryFn: () => scenePagesApi.list(activeScript._id).then(r => r.data),
+    enabled: !!activeScript?._id,
+  });
+  const sceneFolders = foldersData?.scenePages || [];
+  const toggleFolder = (id) => setSelectedFolderIds(prev => {
+    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
+  });
+
+  // Toggle one scene for one version.
+  const toggleVersionScene = (versionId, sceneNumber) => {
+    setVersionPicks(prev => {
+      const cur = new Set(prev[versionId] || []);
+      if (cur.has(sceneNumber)) cur.delete(sceneNumber); else cur.add(sceneNumber);
+      return { ...prev, [versionId]: [...cur] };
+    });
+  };
+  const setVersionScenes = (versionId, sceneNumbers) =>
+    setVersionPicks(prev => ({ ...prev, [versionId]: [...sceneNumbers] }));
+
+  // Payload + count for multi-version mode.
+  const versionScenesPayload = useMemo(() =>
+    Object.entries(versionPicks)
+      .filter(([, arr]) => arr && arr.length)
+      .map(([versionId, sceneNumbers]) => ({ versionId, sceneNumbers })),
+    [versionPicks]);
+  const multiSceneCount = versionScenesPayload.reduce((n, g) => n + g.sceneNumbers.length, 0);
 
   // Auto-select latest call sheet if none pre-selected
   useEffect(() => {
@@ -136,27 +245,38 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     return { matchedShootDays: result, extraSceneInfo: extras };
   }, [shootDays, callSheetScenes, useCallSheetScenes, finalSceneNumbers]);
 
+  const readyToSubmit = (multiMode ? multiSceneCount > 0 : finalSceneNumbers.length > 0) || selectedFolderIds.size > 0;
+
   const handleGenerate = async () => {
     if (!activeScript) return toast.error('No active script found');
-    if (finalSceneNumbers.length === 0) return toast.error('Please select at least one scene');
+    if (!readyToSubmit) return toast.error('Select at least one scene or page');
 
     setGenerating(true);
     try {
-      const { data } = await sidesApi.generate({
+      const payload = {
         scriptId: activeScript._id,
         callSheetId: selectedCallSheet || undefined,
-        sceneNumbers: finalSceneNumbers.join(', '),
         title: title || undefined,
         mode: 'manual',
         includeCallSheet: selectedCallSheet && includeCallSheetPdf ? true : false,
-        includeCallSheetScenes: useCallSheetScenes,
-        callSheetPages: callSheetPages,
         scheduleId: includeSchedule && selectedSchedule ? selectedSchedule : undefined,
         primaryDay: includeSchedule && matchedShootDays.length ? matchedShootDays[0].dayNumber : undefined,
         matchedDays: includeSchedule && matchedShootDays.length
           ? [...new Set([...matchedShootDays.map(d => d.dayNumber), ...extraSceneInfo.map(e => e.dayNumber)])]
           : undefined,
-      });
+        sceneFolderIds: selectedFolderIds.size ? [...selectedFolderIds] : undefined,
+      };
+
+      if (multiMode) {
+        // Scenes come from the per-version picker.
+        payload.versionScenes = versionScenesPayload;
+      } else {
+        payload.sceneNumbers = finalSceneNumbers.join(', ');
+        payload.includeCallSheetScenes = useCallSheetScenes;
+        payload.callSheetPages = callSheetPages;
+      }
+
+      const { data } = await sidesApi.generate(payload);
       toast.success('Sides generation started!');
       onSuccess(data.sides);
     } catch (err) {
@@ -191,16 +311,82 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
 
         {/* Call sheet options — only when a call sheet is selected */}
         {selectedCallSheet && callSheetDetail?.callSheet && (
+          <div style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 0' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Include pages:</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {['all', '1', '2', '3'].map(opt => (
+                <button key={opt} onClick={() => setCallSheetPages(opt)}
+                  style={{
+                    padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
+                    cursor: 'pointer', border: '1px solid', transition: 'all 0.15s',
+                    background: callSheetPages === opt ? 'var(--accent)' : 'var(--bg-card)',
+                    color: callSheetPages === opt ? 'white' : 'var(--text-secondary)',
+                    borderColor: callSheetPages === opt ? 'var(--accent)' : 'var(--border)',
+                  }}>
+                  {opt === 'all' ? 'All' : `Page ${opt}`}
+                </button>
+              ))}
+              <input
+                type="number" min="1" max="20" placeholder="Custom"
+                value={!['all','1','2','3'].includes(callSheetPages) ? callSheetPages : ''}
+                onChange={e => setCallSheetPages(e.target.value || 'all')}
+                style={{ width: '70px', padding: '4px 8px', fontSize: '11px', borderRadius: '6px', textAlign: 'center' }}
+              />
+            </div>
+          </div>
+        )}
+        {callSheetScenes.length > 0 && (
+          <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', padding: '8px', marginBottom: '8px', border: '1px solid var(--border)', opacity: useCallSheetScenes ? 1 : 0.5 }}>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px', fontWeight: '600' }}>Call sheet scenes:</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+              {callSheetScenes.map((s, i) => <span key={i} style={{ background: 'var(--accent-glow)', color: 'var(--accent)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', border: '1px solid var(--border)' }}>{s.sceneNumber}</span>)}
+            </div>
+          </div>
+        )}
+
+        {selectedCallSheet && callSheetDetail?.callSheet && (
           <div style={{ marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <input type="checkbox" checked={useCallSheetScenes} onChange={e => setUseCallSheetScenes(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-              Use scenes from call sheet
-              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{useCallSheetScenes ? '' : '(custom scenes only)'}</span>
-            </label>
+            {!multiMode && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <input type="checkbox" checked={useCallSheetScenes} onChange={e => setUseCallSheetScenes(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+                Use scenes from call sheet
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{useCallSheetScenes ? '' : '(custom scenes only)'}</span>
+              </label>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
               <input type="checkbox" checked={includeCallSheetPdf} onChange={e => setIncludeCallSheetPdf(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
               Attach call sheet to sides PDF
             </label>
+          </div>
+        )}
+
+        {/* Multi-version mode toggle */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: multiMode ? '8px' : '12px', padding: '4px 0' }}>
+          <input type="checkbox" checked={multiMode} onChange={e => setMultiMode(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+          Pull scenes from multiple script versions
+        </label>
+
+        {/* Multi-version picker */}
+        {multiMode && (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={L}>Pick scenes per version</label>
+            {versions.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Loading versions…</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {versions.map(v => (
+                  <VersionScenePicker
+                    key={v._id}
+                    version={v}
+                    isCurrent={String(v._id) === String(activeVersionId)}
+                    picked={versionPicks[v._id] || []}
+                    onToggleScene={(sn) => toggleVersionScene(v._id, sn)}
+                    onSelectAll={(all) => setVersionScenes(v._id, all)}
+                    onClear={() => setVersionScenes(v._id, [])}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -226,16 +412,46 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           </label>
         )}
 
-        {/* Manual */}
-        <div style={{ marginBottom: '12px' }}>
-          <label style={L}>{useCallSheetScenes ? 'Additional Scenes (manual)' : 'Custom Scenes (required)'}</label>
-          <input value={manualScenes} onChange={e => setManualScenes(e.target.value)} placeholder="e.g. 1, 3, 5-8" />
-        </div>
+        {/* Manual — single-version mode only */}
+        {!multiMode && (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={L}>{useCallSheetScenes ? 'Additional Scenes (manual)' : 'Custom Scenes (required)'}</label>
+            <input value={manualScenes} onChange={e => setManualScenes(e.target.value)} placeholder="e.g. 1, 3, 5-8" />
+          </div>
+        )}
+
+        {/* Scene folders (Pages) */}
+        {sceneFolders.length > 0 && (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={L}>Pages (scene folders)</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {sceneFolders.map(f => {
+                const on = selectedFolderIds.has(f._id);
+                return (
+                  <label key={f._id} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border)', background: on ? 'var(--accent-glow)' : 'var(--bg-secondary)' }}>
+                    <input type="checkbox" checked={on} onChange={() => toggleFolder(f._id)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+                    <span style={{ width: '12px', height: '12px', borderRadius: '3px', background: f.color || '#9e9e9e', flexShrink: 0 }} />
+                    <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-primary)' }}>Scene {f.sceneNumber}</span>
+                    {f.description && <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.description}</span>}
+                    <span style={{ flex: 1 }} />
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{f.pageCount || 0} pg</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Summary */}
-        {finalSceneNumbers.length > 0 && (
+        {!multiMode && finalSceneNumbers.length > 0 && (
           <div style={{ marginBottom: '12px', padding: '8px 12px', borderRadius: '8px', background: 'var(--accent-glow)', border: '1px solid var(--border)', fontSize: '12px', color: 'var(--text-primary)' }}>
             <strong>{finalSceneNumbers.length} scene(s):</strong> {finalSceneNumbers.join(', ')}
+            {includeSchedule && matchedShootDays.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--accent)' }}>+ {matchedShootDays.length} shoot day(s)</span>}
+          </div>
+        )}
+        {multiMode && multiSceneCount > 0 && (
+          <div style={{ marginBottom: '12px', padding: '8px 12px', borderRadius: '8px', background: 'var(--accent-glow)', border: '1px solid var(--border)', fontSize: '12px', color: 'var(--text-primary)' }}>
+            <strong>{multiSceneCount} scene(s) across {versionScenesPayload.length} version(s)</strong>
             {includeSchedule && matchedShootDays.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--accent)' }}>+ {matchedShootDays.length} shoot day(s)</span>}
           </div>
         )}
@@ -249,8 +465,8 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
           <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn-primary" onClick={handleGenerate}
-            disabled={generating || !activeScript || finalSceneNumbers.length === 0}
-            style={{ opacity: (generating || !activeScript || finalSceneNumbers.length === 0) ? 0.5 : 1 }}>
+            disabled={generating || !activeScript || !readyToSubmit}
+            style={{ opacity: (generating || !activeScript || !readyToSubmit) ? 0.5 : 1 }}>
             {generating ? 'Submitting...' : 'Submit'}
           </button>
         </div>

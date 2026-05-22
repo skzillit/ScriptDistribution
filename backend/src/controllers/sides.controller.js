@@ -5,7 +5,7 @@ const ScriptVersion = require('../models/ScriptVersion');
 const { uploadFile, getDownloadUrl, getScriptPdfKey, getFileBuffer } = require('../services/storage.service');
 const { extractTextFromPdf } = require('../services/pdf.service');
 const { parseCallSheetText, parseSceneNumberInput } = require('../utils/callSheetParser');
-const { extractSides, extractSidesWithAI, buildSceneMap } = require('../services/sides.service');
+const { extractSides, extractSidesWithAI, extractSidesMultiVersion, buildSceneMap } = require('../services/sides.service');
 const ScriptPage = require('../models/ScriptPage');
 const AnalyticsEvent = require('../models/AnalyticsEvent');
 
@@ -441,12 +441,53 @@ async function deleteCallSheet(req, res) {
 // ====== SIDES ENDPOINTS ======
 
 async function generateSides(req, res) {
-  const { callSheetId, scriptId, versionId, sceneNumbers: manualScenes, title, mode, aiProvider, includeCallSheet, includeCallSheetScenes, callSheetPages, scheduleId, matchedDays, primaryDay } = req.body;
+  const { callSheetId, scriptId, versionId, sceneNumbers: manualScenes, title, mode, aiProvider, includeCallSheet, includeCallSheetScenes, callSheetPages, scheduleId, matchedDays, primaryDay, versionScenes, sceneFolderIds } = req.body;
 
   const script = await Script.findById(scriptId);
   if (!script) return res.status(404).json({ error: 'Script not found' });
 
-  const targetVersionId = versionId || script.currentVersion;
+  // Resolve any pulled-in scene folders (ScenePage). Only folders belonging to
+  // this script are honored. Denormalized onto the sides for rendering.
+  let sceneFolders = [];
+  if (Array.isArray(sceneFolderIds) && sceneFolderIds.length) {
+    const ScenePage = require('../models/ScenePage');
+    const folders = await ScenePage.find({ _id: { $in: sceneFolderIds }, script: scriptId });
+    sceneFolders = folders.map(f => ({
+      scenePage: f._id,
+      sceneNumber: f.sceneNumber,
+      color: f.color,
+      description: f.description,
+      pdfUrl: f.pdfUrl,
+    }));
+  }
+
+  // ── Multi-version mode ──────────────────────────────────────────────
+  // When the client sends versionScenes[], the user has hand-picked specific
+  // scenes from specific script versions. We validate each version belongs to
+  // this script, resolve a display label, and the scene list is the union of
+  // all picked scenes (used for schedule matching + display).
+  const rawGroups = Array.isArray(versionScenes)
+    ? versionScenes.filter(g => g && g.versionId && Array.isArray(g.sceneNumbers) && g.sceneNumbers.length)
+    : [];
+  const multiVersion = rawGroups.length > 0;
+
+  let versionGroups = [];
+  if (multiVersion) {
+    for (const g of rawGroups) {
+      const v = await ScriptVersion.findById(g.versionId);
+      if (!v || String(v.script) !== String(scriptId)) {
+        return res.status(400).json({ error: 'Invalid script version in versionScenes.' });
+      }
+      versionGroups.push({
+        versionId: String(g.versionId),
+        versionLabel: v.versionLabel || `v${v.versionNumber}`,
+        sceneNumbers: g.sceneNumbers.map(String),
+      });
+    }
+  }
+
+  // The "primary" version (satisfies the required scriptVersion field).
+  const targetVersionId = multiVersion ? versionGroups[0].versionId : (versionId || script.currentVersion);
   const version = await ScriptVersion.findById(targetVersionId);
   if (!version) return res.status(404).json({ error: 'Script version not found' });
 
@@ -456,20 +497,27 @@ async function generateSides(req, res) {
   const useCallSheetScenes = includeCallSheetScenes !== false;
 
   let sceneNumbers = [];
-  if (callSheetId && useCallSheetScenes) {
-    const callSheet = await CallSheet.findById(callSheetId);
-    if (!callSheet) return res.status(404).json({ error: 'Call sheet not found' });
-    sceneNumbers = callSheet.scenes.map(s => s.sceneNumber);
+  if (multiVersion) {
+    // Scene list is the union across all picked versions.
+    const set = new Set();
+    for (const g of versionGroups) g.sceneNumbers.forEach(s => set.add(String(s)));
+    sceneNumbers = [...set];
+  } else {
+    if (callSheetId && useCallSheetScenes) {
+      const callSheet = await CallSheet.findById(callSheetId);
+      if (!callSheet) return res.status(404).json({ error: 'Call sheet not found' });
+      sceneNumbers = callSheet.scenes.map(s => s.sceneNumber);
+    }
+    if (manualScenes) {
+      const parsed = Array.isArray(manualScenes) ? manualScenes : parseSceneNumberInput(manualScenes);
+      sceneNumbers = [...new Set([...sceneNumbers, ...parsed])];
+    }
   }
-  if (manualScenes) {
-    const parsed = Array.isArray(manualScenes) ? manualScenes : parseSceneNumberInput(manualScenes);
-    sceneNumbers = [...new Set([...sceneNumbers, ...parsed])];
-  }
-  if (sceneNumbers.length === 0) {
+  if (sceneNumbers.length === 0 && sceneFolders.length === 0) {
     return res.status(400).json({
-      error: useCallSheetScenes
-        ? 'No scene numbers provided.'
-        : 'Enter at least one custom scene number.',
+      error: multiVersion
+        ? 'Select at least one scene from a version.'
+        : (useCallSheetScenes ? 'No scene numbers provided.' : 'Enter at least one custom scene number.'),
     });
   }
 
@@ -558,6 +606,12 @@ async function generateSides(req, res) {
     script: scriptId,
     title: titleStr,
     sceneNumbers,
+    versionScenes: multiVersion ? versionGroups.map(g => ({
+      scriptVersion: g.versionId,
+      versionLabel: g.versionLabel,
+      sceneNumbers: g.sceneNumbers,
+    })) : [],
+    sceneFolders,
     shootDayInfo,
     includeCallSheet: !!includeCallSheet,
     callSheetPages: callSheetPages || 'all',
@@ -565,7 +619,12 @@ async function generateSides(req, res) {
     status: 'generating',
   });
 
-  if (useAI) {
+  if (multiVersion) {
+    // AI mode isn't supported for multi-version yet — always use image extraction.
+    extractSidesMultiVersion(sides._id, versionGroups).catch(err => {
+      console.error('Background multi-version sides extraction error:', err);
+    });
+  } else if (useAI) {
     extractSidesWithAI(sides._id, targetVersionId, sceneNumbers, aiProvider).catch(err => {
       console.error('Background AI sides extraction error:', err);
     });

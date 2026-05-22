@@ -5,6 +5,7 @@ import { scriptsApi } from '../api/scripts.api';
 import { getApiBaseUrl } from '../api/client';
 import { toast } from 'react-toastify';
 import UploadScriptModal from '../components/scripts/UploadScriptModal';
+import PagesSection from '../components/scripts/PagesSection';
 import dayjs from 'dayjs';
 
 const formatIcons = { feature: '\uD83C\uDFAC', tv_episode: '\uD83D\uDCFA', short: '\uD83C\uDF9E', commercial: '\uD83D\uDCE2' };
@@ -141,6 +142,9 @@ function DashboardPage() {
           </div>
         </div>
       )}
+
+      {/* Pages (scene folders) for the active script */}
+      {activeScript && <PagesSection scriptId={activeScript._id} />}
 
       {/* History Section */}
       <div>

@@ -25,6 +25,20 @@ export const scriptsApi = {
   getScenes: (versionId) => client.get(`/versions/${versionId}/scenes`),
 };
 
+// Scene "folders" (Pages) attached to a script.
+export const scenePagesApi = {
+  list: (scriptId) => client.get(`/scripts/${scriptId}/pages`),
+  create: (scriptId, formData, onProgress) =>
+    client.post(`/scripts/${scriptId}/pages`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: onProgress,
+    }),
+  update: (id, formData) =>
+    client.put(`/pages/${id}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  remove: (id) => client.delete(`/pages/${id}`),
+  download: (id) => client.get(`/pages/${id}/download`),
+};
+
 export const breakdownApi = {
   trigger: (versionId, provider, mode) => {
     const params = new URLSearchParams();
