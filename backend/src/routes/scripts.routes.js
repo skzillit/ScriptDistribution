@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { moduleAuth } = require('../middleware/moduleAuth');
 const { requireRole } = require('../middleware/roleAuth');
-const { pdfUpload } = require('../middleware/upload');
+const { scriptUpload } = require('../middleware/upload');
 const ctrl = require('../controllers/scripts.controller');
 
 // Scripts — viewers can read, editors/admins can write
@@ -18,6 +18,6 @@ router.post('/:id/restore', moduleAuth, requireRole('admin', 'editor'), ctrl.res
 
 // Versions
 router.get('/:scriptId/versions', moduleAuth, ctrl.listVersions);
-router.post('/:scriptId/versions', moduleAuth, requireRole('admin', 'editor'), pdfUpload.single('pdf'), ctrl.uploadVersion);
+router.post('/:scriptId/versions', moduleAuth, requireRole('admin', 'editor'), scriptUpload.single('pdf'), ctrl.uploadVersion);
 
 module.exports = router;

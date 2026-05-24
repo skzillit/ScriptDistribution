@@ -128,7 +128,7 @@ async function addCollaborator(req, res) {
 }
 
 async function uploadVersion(req, res) {
-  if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
+  if (!req.file) return res.status(400).json({ error: 'A PDF or Final Draft (.fdx) file is required' });
 
   const script = await Script.findById(req.params.scriptId);
   if (!script) return res.status(404).json({ error: 'Script not found' });
@@ -148,14 +148,27 @@ async function uploadVersion(req, res) {
     status: 'processing',
   });
 
-  // Upload to S3
   const s3Key = getScriptPdfKey(script._id, version._id);
-  await uploadFile(s3Key, req.file.buffer);
-  version.pdfUrl = s3Key;
 
-  // Extract pages
+  // Extract pages (after converting Final Draft → PDF if needed)
   try {
-    const { pages, pageCount, fullText } = await extractPagesFromPdf(req.file.buffer);
+    // Final Draft (.fdx) is XML, not a PDF. Convert it to a screenplay-formatted
+    // PDF so the rest of the pipeline (page extraction + sides image cropping)
+    // works exactly as it does for an uploaded PDF.
+    let pdfBuffer = req.file.buffer;
+    const isFdx = (req.file.originalname || '').toLowerCase().endsWith('.fdx')
+      || /xml/.test(req.file.mimetype || '');
+    if (isFdx) {
+      const { fdxToPdf } = require('../utils/fdxToPdf');
+      const { buffer } = await fdxToPdf(req.file.buffer.toString('utf8'));
+      pdfBuffer = buffer;
+    }
+
+    // Store the PDF (original or FDX-converted) and extract its pages.
+    await uploadFile(s3Key, pdfBuffer);
+    version.pdfUrl = s3Key;
+
+    const { pages, pageCount, fullText } = await extractPagesFromPdf(pdfBuffer);
     version.rawText = fullText;
     version.pageCount = pageCount;
     version.status = 'ready';
@@ -187,7 +200,7 @@ async function uploadVersion(req, res) {
   } catch (error) {
     version.status = 'error';
     await version.save();
-    res.status(500).json({ error: `PDF processing failed: ${error.message}` });
+    res.status(500).json({ error: `Script processing failed: ${error.message}` });
   }
 }
 

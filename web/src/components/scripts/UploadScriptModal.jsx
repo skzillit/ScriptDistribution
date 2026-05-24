@@ -14,13 +14,20 @@ function UploadScriptModal({ onClose, onSuccess }) {
   const onDrop = useCallback((acceptedFiles) => {
     if (acceptedFiles.length > 0) {
       setFile(acceptedFiles[0]);
-      if (!title) setTitle(acceptedFiles[0].name.replace('.pdf', ''));
+      if (!title) setTitle(acceptedFiles[0].name.replace(/\.(pdf|fdx)$/i, ''));
     }
   }, [title]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'application/pdf': ['.pdf'] },
+    // Accept PDF and Final Draft (.fdx). The .fdx mimetype varies by browser,
+    // so list the extension under several mime keys.
+    accept: {
+      'application/pdf': ['.pdf'],
+      'application/xml': ['.fdx'],
+      'text/xml': ['.fdx'],
+      'application/octet-stream': ['.fdx'],
+    },
     maxFiles: 1,
     maxSize: 50 * 1024 * 1024,
   });
@@ -118,10 +125,10 @@ function UploadScriptModal({ onClose, onSuccess }) {
                   </svg>
                 </div>
                 <div style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-                  {isDragActive ? 'Drop the PDF here' : 'Drag & drop a screenplay PDF'}
+                  {isDragActive ? 'Drop the file here' : 'Drag & drop a screenplay PDF or Final Draft (.fdx)'}
                 </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: '4px' }}>
-                  or click to browse (max 50MB)
+                  or click to browse — PDF or .fdx (max 50MB)
                 </div>
               </div>
             )}
