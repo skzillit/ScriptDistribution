@@ -17,6 +17,16 @@ function emitSidesUpdated(sides) {
   });
 }
 
+// pdfjs needs the standard-font data to RENDER standard-14 fonts (e.g. Courier)
+// to a canvas. Without it, PDFs that reference non-embedded standard fonts —
+// like our FDX→PDF output — render completely blank (text extraction still
+// works, which is why scene detection passes but the cropped images are empty).
+// Resolve the standard_fonts directory shipped with pdfjs-dist.
+const STANDARD_FONT_DATA_URL = (() => {
+  const path = require('path');
+  return path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts') + path.sep;
+})();
+
 // pdfjs v4 legacy build requires a worker script path even in Node.
 // Point it at the worker module shipped with the package.
 let _pdfjsModule = null;
@@ -48,7 +58,7 @@ async function buildPdfSceneMap(pdfBuffer) {
   const pdfjs = await loadPdfjs();
   const data = bufferToUint8(pdfBuffer);
   const pdf = await pdfjs.getDocument({
-    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
 
   const HEADING_RE = /\b(INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+/i;
@@ -173,7 +183,7 @@ async function renderSceneImages(pdfBuffer, renderSpecs, options = {}) {
 
   const data = bufferToUint8(pdfBuffer);
   const pdf = await pdfjs.getDocument({
-    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
   const totalPages = pdf.numPages;
 
@@ -403,7 +413,7 @@ async function buildSchedulePdfSceneMap(pdfBuffer) {
   const pdfjs = await loadPdfjs();
   const data = bufferToUint8(pdfBuffer);
   const pdf = await pdfjs.getDocument({
-    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
 
   const { SCENE_NUM_RE, MM_INFO_RE } = require('../utils/scheduleParser');
@@ -745,7 +755,7 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
       const pdfjs = await loadPdfjs();
       const probeDoc = await pdfjs.getDocument({
         data: bufferToUint8(originalPdfBuffer),
-        disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+        disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
       }).promise;
       const pdfTotalPages = probeDoc.numPages;
       await probeDoc.destroy();
@@ -809,7 +819,7 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
           const pdfjsMod = await loadPdfjs();
           const schedProbe = await pdfjsMod.getDocument({
             data: bufferToUint8(schedPdfBuffer),
-            disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+            disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
           }).promise;
           const schedTotalPages = schedProbe.numPages;
           await schedProbe.destroy();
@@ -1043,7 +1053,7 @@ function generateSidesPdf(sides) {
         doc.rect(60, y, sw, sw).fill(safeColor);
         doc.restore();
         doc.fillColor('#000000').font('Courier-Bold').fontSize(13);
-        doc.text(`Scene ${folder.sceneNumber}`, 60 + sw + 8, y, { width: 492 - sw - 8 });
+        doc.text(`Scene ${folder.label}`, 60 + sw + 8, y, { width: 492 - sw - 8 });
         y += 18;
         if (folder.description) {
           doc.font('Courier').fontSize(10).fillColor('#555555');
@@ -1319,7 +1329,7 @@ For each scene include a summary of the action and dialogue. This is for our int
       const pdfjsMod = await loadPdfjs();
       const probeDoc = await pdfjsMod.getDocument({
         data: bufferToUint8(originalPdfBuffer),
-        disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+        disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
       }).promise;
       const pdfTotalPages = probeDoc.numPages;
       await probeDoc.destroy();
@@ -1371,7 +1381,7 @@ async function attachScheduleImages(sides) {
     const pdfjsMod = await loadPdfjs();
     const schedProbe = await pdfjsMod.getDocument({
       data: bufferToUint8(schedPdfBuffer),
-      disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+      disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
     }).promise;
     const schedTotalPages = schedProbe.numPages;
     await schedProbe.destroy();
@@ -1402,7 +1412,7 @@ async function renderPdfPagesToImages(pdfBuffer, maxPages = 30) {
   const pdfjs = await loadPdfjs();
   const pdf = await pdfjs.getDocument({
     data: bufferToUint8(pdfBuffer),
-    disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+    disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
   const SCALE = 2;
   const images = [];
@@ -1422,19 +1432,58 @@ async function renderPdfPagesToImages(pdfBuffer, maxPages = 30) {
 }
 
 /**
- * Render each pulled-in scene folder's PDF to images and attach to
- * `sides._folderImages`. Shared by all extraction paths. Non-fatal per folder.
+ * Render pulled-in scene folders (Pages) to images for `sides._folderImages`.
+ * Each output entry is { label, color, description, images }.
+ *
+ * When a folder specifies sceneNumbers, we crop just those scenes from its PDF
+ * (same detection + crop machinery as scripts) — one entry per scene. Otherwise
+ * the whole PDF is rendered as a single entry titled by the folder's scene no.
+ * Non-fatal per folder.
  */
 async function attachFolderImages(sides) {
   if (!Array.isArray(sides.sceneFolders) || sides.sceneFolders.length === 0) return;
+  const pdfjs = await loadPdfjs();
+  const normalize = (s) => String(s).trim().toUpperCase().replace(/PT$/, '');
   const out = [];
+
   for (const folder of sides.sceneFolders) {
     if (!folder.pdfUrl) continue;
     try {
       const buf = await getFileBuffer(folder.pdfUrl);
+      const wanted = Array.isArray(folder.sceneNumbers) ? folder.sceneNumbers.filter(Boolean) : [];
+
+      if (wanted.length > 0) {
+        // Crop the selected scenes from the page PDF.
+        const sceneMap = await buildPdfSceneMap(buf);
+        const probe = await pdfjs.getDocument({
+          data: bufferToUint8(buf),
+          disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
+        }).promise;
+        const totalPages = probe.numPages;
+        await probe.destroy();
+
+        const specs = buildRenderSpecs(sceneMap, new Set(wanted.map(normalize)), totalPages);
+        if (specs.length > 0) {
+          const sceneImages = await renderSceneImages(buf, specs);
+          let first = true;
+          for (const si of sceneImages) {
+            out.push({
+              label: si.sceneNumber,
+              color: folder.color,
+              description: first ? folder.description : '',
+              images: si.images,
+            });
+            first = false;
+          }
+          continue;
+        }
+        // Fall through to whole-PDF if nothing matched.
+      }
+
+      // Whole-PDF fallback (no scenes requested or none detected).
       const images = await renderPdfPagesToImages(buf);
       out.push({
-        sceneNumber: folder.sceneNumber,
+        label: folder.sceneNumber,
         color: folder.color,
         description: folder.description,
         images,
@@ -1475,9 +1524,12 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
       if (requested.size === 0) continue;
 
       const label = group.versionLabel || `v?`;
+      // Use the version's OWN parent script id (may be a historical/archived
+      // script), falling back to the sides' primary script for older payloads.
+      const pdfScriptId = group.scriptId || sides.script;
       let pdfBuffer;
       try {
-        pdfBuffer = await getFileBuffer(getScriptPdfKey(sides.script, group.versionId));
+        pdfBuffer = await getFileBuffer(getScriptPdfKey(pdfScriptId, group.versionId));
       } catch (e) {
         console.warn(`[sides:multi] could not load PDF for version ${group.versionId}: ${e.message}`);
         continue;
@@ -1486,7 +1538,7 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
       const pdfSceneMap = await buildPdfSceneMap(pdfBuffer);
       const probeDoc = await pdfjs.getDocument({
         data: bufferToUint8(pdfBuffer),
-        disableFontFace: true, useSystemFonts: false, isEvalSupported: false,
+        disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
       }).promise;
       const totalPages = probeDoc.numPages;
       await probeDoc.destroy();

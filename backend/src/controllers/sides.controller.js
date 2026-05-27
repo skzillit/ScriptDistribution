@@ -446,26 +446,45 @@ async function generateSides(req, res) {
   const script = await Script.findById(scriptId);
   if (!script) return res.status(404).json({ error: 'Script not found' });
 
-  // Resolve any pulled-in scene folders (ScenePage). Only folders belonging to
-  // this script are honored. Denormalized onto the sides for rendering.
+  // Resolve any pulled-in scene folders (ScenePage). Folders from ANY script the
+  // user owns are honored (active or archived/historical). Denormalized for rendering.
+  //
+  // Two request shapes are accepted:
+  //   pageSelections: [{ pageId, sceneNumbers: [...] }]  ← per-scene selection (preferred)
+  //   sceneFolderIds: [pageId, ...]                       ← legacy: whole-PDF
+  const { pageSelections } = req.body;
   let sceneFolders = [];
-  if (Array.isArray(sceneFolderIds) && sceneFolderIds.length) {
+  const selList = Array.isArray(pageSelections) && pageSelections.length
+    ? pageSelections.filter(s => s && s.pageId)
+    : (Array.isArray(sceneFolderIds) ? sceneFolderIds.map(id => ({ pageId: id, sceneNumbers: [] })) : []);
+  if (selList.length) {
     const ScenePage = require('../models/ScenePage');
-    const folders = await ScenePage.find({ _id: { $in: sceneFolderIds }, script: scriptId });
-    sceneFolders = folders.map(f => ({
-      scenePage: f._id,
-      sceneNumber: f.sceneNumber,
-      color: f.color,
-      description: f.description,
-      pdfUrl: f.pdfUrl,
-    }));
+    const ids = selList.map(s => s.pageId);
+    const folders = await ScenePage.find({ _id: { $in: ids } }).populate('script', 'owner');
+    const byId = new Map(
+      folders
+        .filter(f => f.script && String(f.script.owner) === String(req.user._id))
+        .map(f => [String(f._id), f])
+    );
+    for (const sel of selList) {
+      const f = byId.get(String(sel.pageId));
+      if (!f) continue;
+      sceneFolders.push({
+        scenePage: f._id,
+        sceneNumber: f.sceneNumber,
+        sceneNumbers: Array.isArray(sel.sceneNumbers) ? sel.sceneNumbers.map(String) : [],
+        color: f.color,
+        description: f.description,
+        pdfUrl: f.pdfUrl,
+      });
+    }
   }
 
-  // ── Multi-version mode ──────────────────────────────────────────────
+  // ── Multi-version / multi-script mode ───────────────────────────────
   // When the client sends versionScenes[], the user has hand-picked specific
-  // scenes from specific script versions. We validate each version belongs to
-  // this script, resolve a display label, and the scene list is the union of
-  // all picked scenes (used for schedule matching + display).
+  // scenes from specific script versions — which may belong to the active script
+  // OR any historical (archived) script the same user owns. Authorize by
+  // ownership and remember each version's OWN parent script for PDF lookup.
   const rawGroups = Array.isArray(versionScenes)
     ? versionScenes.filter(g => g && g.versionId && Array.isArray(g.sceneNumbers) && g.sceneNumbers.length)
     : [];
@@ -474,12 +493,14 @@ async function generateSides(req, res) {
   let versionGroups = [];
   if (multiVersion) {
     for (const g of rawGroups) {
-      const v = await ScriptVersion.findById(g.versionId);
-      if (!v || String(v.script) !== String(scriptId)) {
-        return res.status(400).json({ error: 'Invalid script version in versionScenes.' });
+      const v = await ScriptVersion.findById(g.versionId).populate('script', 'owner title');
+      if (!v || !v.script || String(v.script.owner) !== String(req.user._id)) {
+        return res.status(400).json({ error: 'Invalid or unauthorized script version in versionScenes.' });
       }
       versionGroups.push({
         versionId: String(g.versionId),
+        scriptId: String(v.script._id), // version's OWN parent script — used to locate its PDF
+        scriptTitle: v.script.title,
         versionLabel: v.versionLabel || `v${v.versionNumber}`,
         sceneNumbers: g.sceneNumbers.map(String),
       });
@@ -608,6 +629,7 @@ async function generateSides(req, res) {
     sceneNumbers,
     versionScenes: multiVersion ? versionGroups.map(g => ({
       scriptVersion: g.versionId,
+      script: g.scriptId,
       versionLabel: g.versionLabel,
       sceneNumbers: g.sceneNumbers,
     })) : [],

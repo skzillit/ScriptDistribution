@@ -68,6 +68,160 @@ function VersionScenePicker({ version, isCurrent, picked, onToggleScene, onSelec
   );
 }
 
+/**
+ * Lists the versions of one script (active or historical) as a labelled group,
+ * each version expandable into its scene picker. Versions are fetched per script
+ * so historical scripts' data isn't loaded until shown.
+ */
+function ScriptVersionsGroup({ script, isActive, activeVersionId, versionPicks, onToggleScene, onSetScenes }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['script-versions', script._id],
+    queryFn: () => scriptsApi.listVersions(script._id).then(r => r.data),
+  });
+  const versions = data?.versions || [];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+        <span style={{ fontSize: '12px', fontWeight: '800', color: 'var(--text-primary)' }}>{script.title}</span>
+        <span style={{ fontSize: '9px', fontWeight: '700', padding: '1px 6px', borderRadius: '4px',
+          color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+          background: isActive ? 'var(--accent-glow)' : 'var(--bg-card)' }}>
+          {isActive ? 'ACTIVE' : 'HISTORY'}
+        </span>
+      </div>
+      {isLoading ? (
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '4px 0 4px 8px' }}>Loading versions…</div>
+      ) : versions.length === 0 ? (
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '4px 0 4px 8px' }}>No versions.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingLeft: '8px' }}>
+          {versions.map(v => (
+            <VersionScenePicker
+              key={v._id}
+              version={v}
+              isCurrent={isActive && String(v._id) === String(activeVersionId)}
+              picked={versionPicks[v._id] || []}
+              onToggleScene={(sn) => onToggleScene(v._id, sn)}
+              onSelectAll={(all) => onSetScenes(v._id, all)}
+              onClear={() => onSetScenes(v._id, [])}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One collapsible Page (scene folder). Lazily loads the scenes detected in the
+ * page's PDF and lets the user toggle individual scenes — exactly like a script
+ * version. If no scenes are detected, offers an "include whole PDF" checkbox.
+ */
+function FolderScenePicker({ folder, picked, whole, onToggleScene, onSelectAll, onClear, onToggleWhole }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading } = useQuery({
+    queryKey: ['scene-page-scenes', folder._id],
+    queryFn: () => scenePagesApi.scenes(folder._id).then(r => r.data),
+    enabled: open,
+  });
+  const scenes = data?.scenes || [];
+  const pickedSet = new Set(picked);
+  const selectedCount = picked.length + (whole ? 1 : 0);
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: '8px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer' }}>
+        <span style={{ fontSize: '11px', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', color: 'var(--text-muted)' }}>{'▶'}</span>
+        <span style={{ width: '12px', height: '12px', borderRadius: '3px', background: folder.color || '#9e9e9e', flexShrink: 0 }} />
+        <span style={{ fontWeight: '700', fontSize: '13px', color: 'var(--text-primary)' }}>Scene {folder.sceneNumber}</span>
+        {folder.description && <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{folder.description}</span>}
+        <span style={{ flex: 1 }} />
+        {selectedCount > 0 && <span style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '600' }}>{whole ? 'whole PDF' : `${picked.length} selected`}</span>}
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{folder.pageCount || 0} pg</span>
+      </div>
+      {open && (
+        <div style={{ padding: '0 12px 10px' }}>
+          {isLoading ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>Loading scenes…</div>
+          ) : scenes.length === 0 ? (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', padding: '4px 0' }}>
+              <input type="checkbox" checked={whole} onChange={onToggleWhole} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+              No scenes detected — include entire PDF
+            </label>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '6px' }}>
+                <button type="button" onClick={() => onSelectAll(scenes.map(s => s.sceneNumber))}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '11px', cursor: 'pointer', padding: 0 }}>Select all</button>
+                <button type="button" onClick={onClear}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '11px', cursor: 'pointer', padding: 0 }}>Clear</button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {scenes.map((s, i) => {
+                  const on = pickedSet.has(s.sceneNumber);
+                  return (
+                    <button key={i} type="button" title={s.heading || ''} onClick={() => onToggleScene(s.sceneNumber)}
+                      style={{
+                        padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+                        border: '1px solid', transition: 'all .12s',
+                        background: on ? 'var(--accent)' : 'var(--bg-card)',
+                        color: on ? 'white' : 'var(--text-secondary)',
+                        borderColor: on ? 'var(--accent)' : 'var(--border)',
+                      }}>
+                      {s.sceneNumber}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Lists the scene folders (Pages) of one script (active or historical) as a
+ * labelled group, each Page expandable into its detected scenes. Fetched per script.
+ */
+function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, onToggleScene, onSetScenes, onToggleWhole }) {
+  const { data } = useQuery({
+    queryKey: ['scene-pages', script._id],
+    queryFn: () => scenePagesApi.list(script._id).then(r => r.data),
+  });
+  const folders = data?.scenePages || [];
+  if (folders.length === 0) return null;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+        <span style={{ fontSize: '12px', fontWeight: '800', color: 'var(--text-primary)' }}>{script.title}</span>
+        <span style={{ fontSize: '9px', fontWeight: '700', padding: '1px 6px', borderRadius: '4px',
+          color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+          background: isActive ? 'var(--accent-glow)' : 'var(--bg-card)' }}>
+          {isActive ? 'ACTIVE' : 'HISTORY'}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingLeft: '8px' }}>
+        {folders.map(f => (
+          <FolderScenePicker
+            key={f._id}
+            folder={f}
+            picked={folderScenePicks[f._id] || []}
+            whole={wholeFolders.has(f._id)}
+            onToggleScene={(sn) => onToggleScene(f._id, sn)}
+            onSelectAll={(all) => onSetScenes(f._id, all)}
+            onClear={() => onSetScenes(f._id, [])}
+            onToggleWhole={() => onToggleWhole(f._id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const [selectedCallSheet, setSelectedCallSheet] = useState(preSelectedCallSheet || '');
   const [selectedSchedule, setSelectedSchedule] = useState('');
@@ -85,8 +239,10 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const [multiMode, setMultiMode] = useState(false);
   // Map of versionId -> array of picked scene numbers.
   const [versionPicks, setVersionPicks] = useState({});
-  // Scene folders ("Pages") selected to pull into the booklet.
-  const [selectedFolderIds, setSelectedFolderIds] = useState(new Set());
+  // Pages (scene folders): per-page scene selection (like scripts).
+  // folderScenePicks: { [pageId]: [sceneNumbers] }; wholeFolders: pages included as full PDF.
+  const [folderScenePicks, setFolderScenePicks] = useState({});
+  const [wholeFolders, setWholeFolders] = useState(new Set());
 
   // Get active script (auto-selected, no manual choice needed)
   const { data: activeData } = useQuery({
@@ -126,24 +282,49 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     enabled: !!selectedSchedule,
   });
 
-  // All versions of the active script — loaded only in multi-version mode.
-  const { data: versionsData } = useQuery({
-    queryKey: ['script-versions', activeScript?._id],
-    queryFn: () => scriptsApi.listVersions(activeScript._id).then(r => r.data),
-    enabled: multiMode && !!activeScript?._id,
+  // Archived (historical) scripts — so users can pull scenes/pages from older
+  // scripts too, not just the active one.
+  const { data: historyData } = useQuery({
+    queryKey: ['scripts-history'],
+    queryFn: () => scriptsApi.getHistory({ limit: 100 }).then(r => r.data),
+    enabled: !!activeScript,
   });
-  const versions = versionsData?.versions || [];
+  const historyScripts = historyData?.scripts || [];
 
-  // Scene folders ("Pages") belonging to the active script.
-  const { data: foldersData } = useQuery({
-    queryKey: ['scene-pages', activeScript?._id],
-    queryFn: () => scenePagesApi.list(activeScript._id).then(r => r.data),
-    enabled: !!activeScript?._id,
+  // Scripts offered in the pickers: active first, then history.
+  const scriptsToShow = useMemo(() => {
+    const list = [];
+    if (activeScript) list.push({ script: activeScript, isActive: true });
+    for (const s of historyScripts) list.push({ script: s, isActive: false });
+    return list;
+  }, [activeScript, historyScripts]);
+
+  // Per-page scene selection handlers.
+  const toggleFolderScene = (pageId, sceneNumber) => {
+    setFolderScenePicks(prev => {
+      const cur = new Set(prev[pageId] || []);
+      if (cur.has(sceneNumber)) cur.delete(sceneNumber); else cur.add(sceneNumber);
+      return { ...prev, [pageId]: [...cur] };
+    });
+  };
+  const setFolderScenes = (pageId, sceneNumbers) =>
+    setFolderScenePicks(prev => ({ ...prev, [pageId]: [...sceneNumbers] }));
+  const toggleWholeFolder = (pageId) => setWholeFolders(prev => {
+    const n = new Set(prev); if (n.has(pageId)) n.delete(pageId); else n.add(pageId); return n;
   });
-  const sceneFolders = foldersData?.scenePages || [];
-  const toggleFolder = (id) => setSelectedFolderIds(prev => {
-    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
-  });
+
+  // Build the pageSelections payload + a count for the submit gate.
+  const pageSelections = useMemo(() => {
+    const out = [];
+    for (const [pageId, arr] of Object.entries(folderScenePicks)) {
+      if (arr && arr.length) out.push({ pageId, sceneNumbers: arr });
+    }
+    for (const pageId of wholeFolders) {
+      if (!(folderScenePicks[pageId] && folderScenePicks[pageId].length)) out.push({ pageId, sceneNumbers: [] });
+    }
+    return out;
+  }, [folderScenePicks, wholeFolders]);
+  const pageSelCount = pageSelections.length;
 
   // Toggle one scene for one version.
   const toggleVersionScene = (versionId, sceneNumber) => {
@@ -245,7 +426,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     return { matchedShootDays: result, extraSceneInfo: extras };
   }, [shootDays, callSheetScenes, useCallSheetScenes, finalSceneNumbers]);
 
-  const readyToSubmit = (multiMode ? multiSceneCount > 0 : finalSceneNumbers.length > 0) || selectedFolderIds.size > 0;
+  const readyToSubmit = (multiMode ? multiSceneCount > 0 : finalSceneNumbers.length > 0) || pageSelCount > 0;
 
   const handleGenerate = async () => {
     if (!activeScript) return toast.error('No active script found');
@@ -264,7 +445,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
         matchedDays: includeSchedule && matchedShootDays.length
           ? [...new Set([...matchedShootDays.map(d => d.dayNumber), ...extraSceneInfo.map(e => e.dayNumber)])]
           : undefined,
-        sceneFolderIds: selectedFolderIds.size ? [...selectedFolderIds] : undefined,
+        pageSelections: pageSelCount ? pageSelections : undefined,
       };
 
       if (multiMode) {
@@ -366,23 +547,23 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           Pull scenes from multiple script versions
         </label>
 
-        {/* Multi-version picker */}
+        {/* Multi-version / multi-script picker — versions grouped by script (active + history) */}
         {multiMode && (
           <div style={{ marginBottom: '12px' }}>
-            <label style={L}>Pick scenes per version</label>
-            {versions.length === 0 ? (
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Loading versions…</div>
+            <label style={L}>Pick scenes per script & version</label>
+            {scriptsToShow.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Loading scripts…</div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {versions.map(v => (
-                  <VersionScenePicker
-                    key={v._id}
-                    version={v}
-                    isCurrent={String(v._id) === String(activeVersionId)}
-                    picked={versionPicks[v._id] || []}
-                    onToggleScene={(sn) => toggleVersionScene(v._id, sn)}
-                    onSelectAll={(all) => setVersionScenes(v._id, all)}
-                    onClear={() => setVersionScenes(v._id, [])}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {scriptsToShow.map(({ script, isActive }) => (
+                  <ScriptVersionsGroup
+                    key={script._id}
+                    script={script}
+                    isActive={isActive}
+                    activeVersionId={activeVersionId}
+                    versionPicks={versionPicks}
+                    onToggleScene={toggleVersionScene}
+                    onSetScenes={setVersionScenes}
                   />
                 ))}
               </div>
@@ -420,24 +601,23 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           </div>
         )}
 
-        {/* Scene folders (Pages) */}
-        {sceneFolders.length > 0 && (
+        {/* Scene folders (Pages) — across active + history scripts */}
+        {scriptsToShow.length > 0 && (
           <div style={{ marginBottom: '12px' }}>
             <label style={L}>Pages (scene folders)</label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {sceneFolders.map(f => {
-                const on = selectedFolderIds.has(f._id);
-                return (
-                  <label key={f._id} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border)', background: on ? 'var(--accent-glow)' : 'var(--bg-secondary)' }}>
-                    <input type="checkbox" checked={on} onChange={() => toggleFolder(f._id)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-                    <span style={{ width: '12px', height: '12px', borderRadius: '3px', background: f.color || '#9e9e9e', flexShrink: 0 }} />
-                    <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-primary)' }}>Scene {f.sceneNumber}</span>
-                    {f.description && <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.description}</span>}
-                    <span style={{ flex: 1 }} />
-                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{f.pageCount || 0} pg</span>
-                  </label>
-                );
-              })}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {scriptsToShow.map(({ script, isActive }) => (
+                <ScriptFoldersGroup
+                  key={script._id}
+                  script={script}
+                  isActive={isActive}
+                  folderScenePicks={folderScenePicks}
+                  wholeFolders={wholeFolders}
+                  onToggleScene={toggleFolderScene}
+                  onSetScenes={setFolderScenes}
+                  onToggleWhole={toggleWholeFolder}
+                />
+              ))}
             </div>
           </div>
         )}

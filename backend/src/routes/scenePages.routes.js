@@ -12,5 +12,6 @@ router.post('/scripts/:scriptId/pages', moduleAuth, requireRole('admin', 'editor
 router.put('/pages/:id', moduleAuth, requireRole('admin', 'editor'), pdfUpload.single('pdf'), ctrl.updateScenePage);
 router.delete('/pages/:id', moduleAuth, requireRole('admin', 'editor'), ctrl.deleteScenePage);
 router.get('/pages/:id/download', moduleAuth, ctrl.downloadScenePage);
+router.get('/pages/:id/scenes', moduleAuth, ctrl.listScenePageScenes);
 
 module.exports = router;

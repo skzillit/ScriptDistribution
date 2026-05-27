@@ -94,6 +94,33 @@ async function downloadScenePage(req, res) {
   res.json({ downloadUrl: url });
 }
 
+// GET /pages/:id/scenes  → scenes detected in the page's PDF (like script scenes)
+async function listScenePageScenes(req, res) {
+  const page = await ScenePage.findById(req.params.id);
+  if (!page || !page.pdfUrl) return res.status(404).json({ error: 'Scene page PDF not found' });
+
+  try {
+    const { getFileBuffer } = require('../services/storage.service');
+    const { buildPdfSceneMap } = require('../services/sides.service');
+    const buffer = await getFileBuffer(page.pdfUrl);
+    const map = await buildPdfSceneMap(buffer);
+
+    // Dedupe by scene number (keep first occurrence), mirror getScriptScenes shape.
+    const seen = new Set();
+    const scenes = [];
+    for (const s of map) {
+      if (seen.has(s.sceneNumber)) continue;
+      seen.add(s.sceneNumber);
+      const heading = (s.heading || '').replace(/\s+\d+[A-Za-z]?\s*$/, '').trim();
+      scenes.push({ sceneNumber: s.sceneNumber, heading: heading || `Scene ${s.sceneNumber}`, pageStart: s.pageNumber });
+    }
+    res.json({ pageId: String(page._id), totalScenes: scenes.length, scenes });
+  } catch (err) {
+    console.error('listScenePageScenes failed:', err.message);
+    res.json({ pageId: String(req.params.id), totalScenes: 0, scenes: [] });
+  }
+}
+
 module.exports = {
-  listScenePages, createScenePage, updateScenePage, deleteScenePage, downloadScenePage,
+  listScenePages, createScenePage, updateScenePage, deleteScenePage, downloadScenePage, listScenePageScenes,
 };

@@ -24,6 +24,7 @@ const sidesSchema = new mongoose.Schema({
   // Empty for the common single-version case (then scriptVersion + sceneNumbers apply).
   versionScenes: [{
     scriptVersion: { type: mongoose.Schema.Types.ObjectId, ref: 'ScriptVersion' },
+    script: { type: mongoose.Schema.Types.ObjectId, ref: 'Script' }, // version's own parent script (may be a historical one)
     versionLabel: String,
     sceneNumbers: [String],
     _id: false,
@@ -42,7 +43,8 @@ const sidesSchema = new mongoose.Schema({
   // its uploaded PDF pages under a colored, titled header.
   sceneFolders: [{
     scenePage: { type: mongoose.Schema.Types.ObjectId, ref: 'ScenePage' },
-    sceneNumber: String,
+    sceneNumber: String,          // the folder's title
+    sceneNumbers: [String],       // specific scenes selected from the folder's PDF (empty = whole PDF)
     color: String,
     description: String,
     pdfUrl: String,

@@ -37,6 +37,7 @@ export const scenePagesApi = {
     client.put(`/pages/${id}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   remove: (id) => client.delete(`/pages/${id}`),
   download: (id) => client.get(`/pages/${id}/download`),
+  scenes: (id) => client.get(`/pages/${id}/scenes`),
 };
 
 export const breakdownApi = {
