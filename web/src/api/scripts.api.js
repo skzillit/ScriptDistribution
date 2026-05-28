@@ -77,6 +77,8 @@ export const sidesApi = {
   get: (id) => client.get(`/sides/${id}`),
   download: (id) => client.get(`/sides/${id}/download`),
   delete: (id) => client.delete(`/sides/${id}`),
+  publish: (id) => client.post(`/sides/${id}/publish`),
+  moveToDocDistribution: (id) => client.post(`/sides/${id}/doc-distribution`),
 };
 
 export const scheduleApi = {

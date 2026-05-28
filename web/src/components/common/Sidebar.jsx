@@ -2,10 +2,9 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
+// Scripts/Pages, Call sheets and Schedules are all managed from inside the Sides
+// module ("Add Script/Pages" + the generation popups), so Sides is the only nav item.
 const allMenuItems = [
-  { path: '/callsheet', label: 'Call Sheet', icon: '\uD83D\uDCCB', roles: ['admin', 'editor'] },
-  { path: '/script', label: 'Script', icon: '\uD83C\uDFAC', roles: ['admin', 'editor'] },
-  { path: '/schedule', label: 'Schedule', icon: '\uD83D\uDCC5', roles: ['admin', 'editor'] },
   { path: '/sides', label: 'Sides', icon: '\uD83D\uDCC4', roles: ['admin', 'editor', 'viewer'] },
 ];
 
@@ -32,6 +31,13 @@ function Sidebar() {
       overflowY: 'auto',
       zIndex: 40,
     }}>
+      {/* Section header — Call Sheet / Script / Schedule are part of the Sides module */}
+      <div style={{
+        fontSize: '10px', fontWeight: '700', letterSpacing: '0.8px', textTransform: 'uppercase',
+        color: 'var(--text-muted)', padding: '6px 14px 2px',
+      }}>
+        Sides Module
+      </div>
       {visibleItems.map(item => {
         const isActive = location.pathname === item.path ||
           (item.path === '/script' && location.pathname.startsWith('/scripts')) ||

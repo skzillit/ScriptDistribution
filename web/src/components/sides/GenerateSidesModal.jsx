@@ -227,16 +227,20 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const [selectedSchedule, setSelectedSchedule] = useState('');
   const [callSheetPages, setCallSheetPages] = useState('all');
   const [includeSchedule, setIncludeSchedule] = useState(false);
-  // Attach the call sheet PDF page(s) to the generated sides (view + download).
-  const [includeCallSheetPdf, setIncludeCallSheetPdf] = useState(true);
-  // Seed the scene list from the call sheet's scenes. When false → custom scenes only.
-  const [useCallSheetScenes, setUseCallSheetScenes] = useState(true);
+  // "Include call sheet in sides" checkbox (off by default in Customize).
+  const [includeCallSheetPdf, setIncludeCallSheetPdf] = useState(false);
+  // Call sheets are handled in the Autogenerate popup; the Customize popup is
+  // script/version/pages-driven, so it never seeds from a call sheet.
+  const [useCallSheetScenes] = useState(false);
   const [manualScenes, setManualScenes] = useState('');
   const [pickedScenes, setPickedScenes] = useState(new Set());
   const [title, setTitle] = useState('');
+  // Rearrange order: when on, sides are generated in the exact order typed below.
+  const [rearrange, setRearrange] = useState(false);
+  const [orderInput, setOrderInput] = useState('');
   const [generating, setGenerating] = useState(false);
-  // Multi-version mode: pick specific scenes from specific script versions.
-  const [multiMode, setMultiMode] = useState(false);
+  // Customize Sides always lets you pick scenes from all scripts/versions.
+  const multiMode = true;
   // Map of versionId -> array of picked scene numbers.
   const [versionPicks, setVersionPicks] = useState({});
   // Pages (scene folders): per-page scene selection (like scripts).
@@ -344,22 +348,40 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
       .map(([versionId, sceneNumbers]) => ({ versionId, sceneNumbers })),
     [versionPicks]);
   const multiSceneCount = versionScenesPayload.reduce((n, g) => n + g.sceneNumbers.length, 0);
+  // Flat list of all picked scene numbers (across versions) — used for ordering + schedule matching.
+  const multiSelectedScenes = useMemo(() => versionScenesPayload.flatMap(g => g.sceneNumbers), [versionScenesPayload]);
+  // Scenes picked from Pages (scene folders).
+  const pageSelectedScenes = useMemo(() => Object.values(folderScenePicks).flat(), [folderScenePicks]);
+  // Everything the user has selected (versions + pages), de-duplicated, in pick order.
+  const allSelectedScenes = useMemo(() => [...new Set([...multiSelectedScenes, ...pageSelectedScenes])], [multiSelectedScenes, pageSelectedScenes]);
 
-  // Auto-select latest call sheet if none pre-selected
+  // Keep the rearrange order field in sync with the current selection (scenes
+  // from versions AND pages). Preserves any custom ordering the user typed;
+  // appends newly selected scenes and drops deselected ones.
   useEffect(() => {
-    if (!selectedCallSheet && callSheetsData?.callSheets?.length) {
-      const draft = callSheetsData.callSheets.find(cs => cs.status === 'draft') || callSheetsData.callSheets[0];
-      if (draft) setSelectedCallSheet(draft._id);
+    if (!rearrange) return;
+    const current = orderInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    const selectedSet = new Set(allSelectedScenes);
+    const kept = current.filter(sn => selectedSet.has(sn));
+    const missing = allSelectedScenes.filter(sn => !kept.includes(sn));
+    const next = [...kept, ...missing].join(', ');
+    if (next !== current.join(', ')) setOrderInput(next);
+  }, [rearrange, allSelectedScenes]);
+
+  // Auto-select latest call sheet when "include call sheet" is turned on.
+  useEffect(() => {
+    if (includeCallSheetPdf && !selectedCallSheet && callSheetsData?.callSheets?.length) {
+      setSelectedCallSheet(callSheetsData.callSheets[0]._id);
     }
-  }, [callSheetsData, selectedCallSheet]);
+  }, [includeCallSheetPdf, callSheetsData, selectedCallSheet]);
 
-  // Auto-select latest schedule
+  // Auto-select latest schedule when "include schedule" is turned on.
   useEffect(() => {
-    if (!selectedSchedule && schedulesData?.schedules?.length) {
+    if (includeSchedule && !selectedSchedule && schedulesData?.schedules?.length) {
       const draft = schedulesData.schedules.find(s => s.status === 'draft') || schedulesData.schedules[0];
       if (draft) setSelectedSchedule(draft._id);
     }
-  }, [schedulesData, selectedSchedule]);
+  }, [includeSchedule, schedulesData, selectedSchedule]);
 
   const scriptScenes = scenesData?.scenes || [];
   const callSheetScenes = callSheetDetail?.callSheet?.scenes || [];
@@ -379,13 +401,23 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     return [...set];
   }, [pickedScenes, manualScenes, selectedCallSheet, callSheetScenes, useCallSheetScenes]);
 
+  const enableRearrange = (on) => {
+    setRearrange(on);
+    if (on && !orderInput) setOrderInput((multiMode ? allSelectedScenes : finalSceneNumbers).join(', '));
+  };
+  // The scene order actually sent (single-version mode): the typed order when
+  // rearrange is on, otherwise the natural finalSceneNumbers order.
+  const orderedSceneList = rearrange
+    ? orderInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean)
+    : finalSceneNumbers;
+
   // Find the best matching shoot day + pick extra scenes from other days.
   // Match against call sheet scenes normally, or the custom scene list when
   // the user has turned off "use scenes from call sheet".
   const { matchedShootDays, extraSceneInfo } = useMemo(() => {
-    const matchSource = useCallSheetScenes
-      ? callSheetScenes.map(s => s.sceneNumber)
-      : finalSceneNumbers;
+    const matchSource = multiMode
+      ? multiSelectedScenes
+      : (useCallSheetScenes ? callSheetScenes.map(s => s.sceneNumber) : finalSceneNumbers);
     if (!shootDays.length || !matchSource.length) return { matchedShootDays: [], extraSceneInfo: [] };
     const csSceneSet = new Set(matchSource.map(s => String(s).toUpperCase()));
 
@@ -424,7 +456,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     }
 
     return { matchedShootDays: result, extraSceneInfo: extras };
-  }, [shootDays, callSheetScenes, useCallSheetScenes, finalSceneNumbers]);
+  }, [shootDays, callSheetScenes, useCallSheetScenes, finalSceneNumbers, multiMode, multiSelectedScenes]);
 
   const readyToSubmit = (multiMode ? multiSceneCount > 0 : finalSceneNumbers.length > 0) || pageSelCount > 0;
 
@@ -434,12 +466,13 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
 
     setGenerating(true);
     try {
+      const includeCs = includeCallSheetPdf && !!selectedCallSheet;
       const payload = {
         scriptId: activeScript._id,
-        callSheetId: selectedCallSheet || undefined,
+        callSheetId: includeCs ? selectedCallSheet : undefined,
         title: title || undefined,
         mode: 'manual',
-        includeCallSheet: selectedCallSheet && includeCallSheetPdf ? true : false,
+        includeCallSheet: includeCs,
         scheduleId: includeSchedule && selectedSchedule ? selectedSchedule : undefined,
         primaryDay: includeSchedule && matchedShootDays.length ? matchedShootDays[0].dayNumber : undefined,
         matchedDays: includeSchedule && matchedShootDays.length
@@ -449,12 +482,29 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
       };
 
       if (multiMode) {
-        // Scenes come from the per-version picker.
-        payload.versionScenes = versionScenesPayload;
+        // Scenes come from the per-version picker. When the user typed a custom
+        // order, regroup the picked scenes to follow that order.
+        let groups = versionScenesPayload;
+        if (rearrange && orderInput.trim()) {
+          const order = orderInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+          const sceneToVersion = {};
+          versionScenesPayload.forEach(g => g.sceneNumbers.forEach(sn => { if (!(sn in sceneToVersion)) sceneToVersion[sn] = g.versionId; }));
+          const map = new Map();
+          for (const sn of order) {
+            const vid = sceneToVersion[sn];
+            if (!vid) continue;
+            if (!map.has(vid)) map.set(vid, []);
+            map.get(vid).push(sn);
+          }
+          if (map.size) groups = [...map.entries()].map(([versionId, sceneNumbers]) => ({ versionId, sceneNumbers }));
+          payload.orderedScenes = true;
+        }
+        payload.versionScenes = groups;
       } else {
-        payload.sceneNumbers = finalSceneNumbers.join(', ');
+        payload.sceneNumbers = orderedSceneList.join(', ');
         payload.includeCallSheetScenes = useCallSheetScenes;
         payload.callSheetPages = callSheetPages;
+        if (rearrange) payload.orderedScenes = true;
       }
 
       const { data } = await sidesApi.generate(payload);
@@ -472,80 +522,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
       <div className="card" style={{ width: '620px', maxHeight: '92vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)' }} onClick={e => e.stopPropagation()}>
-        <h2 style={{ marginBottom: '20px', fontSize: '22px', fontWeight: '800', background: 'var(--gradient-accent)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Customize Sides</h2>
-
-        {/* Call Sheet (auto-selected, read-only) */}
-        {selectedCallSheet && callSheetDetail?.callSheet ? (
-          <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontSize: '18px' }}>{'\uD83D\uDCCB'}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>{callSheetDetail.callSheet.title}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{callSheetScenes.length} scenes{callSheetDetail.callSheet.crewCall ? ` \u00B7 Call: ${callSheetDetail.callSheet.crewCall}` : ''}</div>
-            </div>
-            <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '2px 8px', borderRadius: '4px' }}>Call Sheet</span>
-          </div>
-        ) : (
-          <div style={{ marginBottom: '4px', padding: '10px 14px', borderRadius: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: '12px', color: 'var(--text-muted)' }}>
-            {'\uD83D\uDCCB'} No call sheet uploaded
-          </div>
-        )}
-
-        {/* Call sheet options — only when a call sheet is selected */}
-        {selectedCallSheet && callSheetDetail?.callSheet && (
-          <div style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 0' }}>
-            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Include pages:</span>
-            <div style={{ display: 'flex', gap: '4px' }}>
-              {['all', '1', '2', '3'].map(opt => (
-                <button key={opt} onClick={() => setCallSheetPages(opt)}
-                  style={{
-                    padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '600',
-                    cursor: 'pointer', border: '1px solid', transition: 'all 0.15s',
-                    background: callSheetPages === opt ? 'var(--accent)' : 'var(--bg-card)',
-                    color: callSheetPages === opt ? 'white' : 'var(--text-secondary)',
-                    borderColor: callSheetPages === opt ? 'var(--accent)' : 'var(--border)',
-                  }}>
-                  {opt === 'all' ? 'All' : `Page ${opt}`}
-                </button>
-              ))}
-              <input
-                type="number" min="1" max="20" placeholder="Custom"
-                value={!['all','1','2','3'].includes(callSheetPages) ? callSheetPages : ''}
-                onChange={e => setCallSheetPages(e.target.value || 'all')}
-                style={{ width: '70px', padding: '4px 8px', fontSize: '11px', borderRadius: '6px', textAlign: 'center' }}
-              />
-            </div>
-          </div>
-        )}
-        {callSheetScenes.length > 0 && (
-          <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', padding: '8px', marginBottom: '8px', border: '1px solid var(--border)', opacity: useCallSheetScenes ? 1 : 0.5 }}>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px', fontWeight: '600' }}>Call sheet scenes:</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
-              {callSheetScenes.map((s, i) => <span key={i} style={{ background: 'var(--accent-glow)', color: 'var(--accent)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', border: '1px solid var(--border)' }}>{s.sceneNumber}</span>)}
-            </div>
-          </div>
-        )}
-
-        {selectedCallSheet && callSheetDetail?.callSheet && (
-          <div style={{ marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {!multiMode && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                <input type="checkbox" checked={useCallSheetScenes} onChange={e => setUseCallSheetScenes(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-                Use scenes from call sheet
-                <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{useCallSheetScenes ? '' : '(custom scenes only)'}</span>
-              </label>
-            )}
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <input type="checkbox" checked={includeCallSheetPdf} onChange={e => setIncludeCallSheetPdf(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-              Attach call sheet to sides PDF
-            </label>
-          </div>
-        )}
-
-        {/* Multi-version mode toggle */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: multiMode ? '8px' : '12px', padding: '4px 0' }}>
-          <input type="checkbox" checked={multiMode} onChange={e => setMultiMode(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-          Pull scenes from multiple script versions
-        </label>
+        <h2 style={{ marginBottom: '20px', fontSize: '22px', fontWeight: '800', background: 'var(--gradient-accent)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Generate Sides</h2>
 
         {/* Multi-version / multi-script picker — versions grouped by script (active + history) */}
         {multiMode && (
@@ -571,33 +548,29 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           </div>
         )}
 
-        {/* Shooting Schedule (auto-selected, read-only) */}
-        {selectedSchedule && scheduleDetail?.schedule ? (
-          <div style={{ marginBottom: '4px', padding: '10px 14px', borderRadius: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontSize: '18px' }}>{'\uD83D\uDCC5'}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>{scheduleDetail.schedule.title}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{scheduleDetail.schedule.totalDays} days \u00B7 {scheduleDetail.schedule.totalScenes} scenes</div>
-            </div>
-            <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '2px 8px', borderRadius: '4px' }}>Schedule</span>
-          </div>
-        ) : (
-          <div style={{ marginBottom: '4px', padding: '10px 14px', borderRadius: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: '12px', color: 'var(--text-muted)' }}>
-            {'\uD83D\uDCC5'} No shooting schedule uploaded
-          </div>
-        )}
-        {selectedSchedule && scheduleDetail?.schedule && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px', padding: '4px 0' }}>
-            <input type="checkbox" checked={includeSchedule} onChange={e => setIncludeSchedule(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-            Include Schedule in sides
-          </label>
-        )}
-
         {/* Manual — single-version mode only */}
         {!multiMode && (
           <div style={{ marginBottom: '12px' }}>
             <label style={L}>{useCallSheetScenes ? 'Additional Scenes (manual)' : 'Custom Scenes (required)'}</label>
             <input value={manualScenes} onChange={e => setManualScenes(e.target.value)} placeholder="e.g. 1, 3, 5-8" />
+          </div>
+        )}
+
+        {/* Rearrange order — single-version mode only */}
+        {!multiMode && finalSceneNumbers.length > 0 && (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: rearrange ? '8px' : 0 }}>
+              <input type="checkbox" checked={rearrange} onChange={e => enableRearrange(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+              Rearrange order
+            </label>
+            {rearrange && (
+              <>
+                <input value={orderInput} onChange={e => setOrderInput(e.target.value)} placeholder="e.g. 12, 9, 14A, 7" />
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  {orderedSceneList.length} scene(s) in order: {orderedSceneList.join(', ')}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -629,12 +602,73 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
             {includeSchedule && matchedShootDays.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--accent)' }}>+ {matchedShootDays.length} shoot day(s)</span>}
           </div>
         )}
-        {multiMode && multiSceneCount > 0 && (
+        {multiMode && allSelectedScenes.length > 0 && (
           <div style={{ marginBottom: '12px', padding: '8px 12px', borderRadius: '8px', background: 'var(--accent-glow)', border: '1px solid var(--border)', fontSize: '12px', color: 'var(--text-primary)' }}>
-            <strong>{multiSceneCount} scene(s) across {versionScenesPayload.length} version(s)</strong>
+            <strong>{allSelectedScenes.length} scene(s) selected</strong>
+            {pageSelectedScenes.length > 0 && <span style={{ marginLeft: '6px', color: 'var(--text-muted)' }}>({pageSelectedScenes.length} from pages)</span>}
             {includeSchedule && matchedShootDays.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--accent)' }}>+ {matchedShootDays.length} shoot day(s)</span>}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', marginTop: '6px' }}>
+              {allSelectedScenes.map((sn, i) => (
+                <span key={i} style={{ background: 'var(--bg-card)', color: 'var(--accent)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', border: '1px solid var(--border)' }}>{sn}</span>
+              ))}
+            </div>
           </div>
         )}
+
+        {/* Scene order (multi-version) */}
+        {multiMode && allSelectedScenes.length > 0 && (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: rearrange ? '8px' : 0 }}>
+              <input type="checkbox" checked={rearrange} onChange={e => enableRearrange(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+              Rearrange scene order
+            </label>
+            {rearrange && (
+              <>
+                <label style={L}>Scene order  (Write the scene no. to arrange the order)</label>
+                <input value={orderInput} onChange={e => setOrderInput(e.target.value)} placeholder="e.g. 12, 9, 14A, 7" />
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Sides will be ordered as: {orderInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean).join(', ') || '—'}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Call sheet (optional) */}
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: includeCallSheetPdf ? '8px' : 0 }}>
+            <input type="checkbox" checked={includeCallSheetPdf} onChange={e => setIncludeCallSheetPdf(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+            Include call sheet in sides
+          </label>
+          {includeCallSheetPdf && (
+            <select value={selectedCallSheet} onChange={e => setSelectedCallSheet(e.target.value)} style={{ width: '100%' }}>
+              {(callSheetsData?.callSheets || []).length === 0
+                ? <option value="">No published call sheet</option>
+                : <option value="">Select a call sheet…</option>}
+              {(callSheetsData?.callSheets || []).map(cs => (
+                <option key={cs._id} value={cs._id}>{cs.title} ({cs.scenes?.length || 0} scenes)</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* Schedule (optional) */}
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: includeSchedule ? '8px' : 0 }}>
+            <input type="checkbox" checked={includeSchedule} onChange={e => setIncludeSchedule(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
+            Include schedule in sides
+          </label>
+          {includeSchedule && (
+            <select value={selectedSchedule} onChange={e => setSelectedSchedule(e.target.value)} style={{ width: '100%' }}>
+              {(schedulesData?.schedules || []).length === 0
+                ? <option value="">No published schedule</option>
+                : <option value="">Select a schedule…</option>}
+              {(schedulesData?.schedules || []).map(s => (
+                <option key={s._id} value={s._id}>{s.title} ({s.totalDays || 0} days)</option>
+              ))}
+            </select>
+          )}
+        </div>
 
         {/* Title */}
         <div style={{ marginBottom: '20px' }}>

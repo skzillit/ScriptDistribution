@@ -26,6 +26,9 @@ const callSheetSchema = new mongoose.Schema({
   sunset: String,
   notes: String,
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
+  // Provenance: 'published' = the production's official call sheet(s); 'uploaded'
+  // = added ad-hoc from the Autogenerate Sides popup (deletable from there).
+  source: { type: String, enum: ['published', 'uploaded'], default: 'published' },
 }, { timestamps: true });
 
 callSheetSchema.index({ project: 1, date: -1 });

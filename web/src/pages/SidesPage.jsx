@@ -1,19 +1,63 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { sidesApi } from '../api/scripts.api';
+import { sidesApi, scriptsApi, scheduleApi } from '../api/scripts.api';
 import { getApiBaseUrl } from '../api/client';
 import { onEvent } from '../api/socket';
 import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
 import GenerateSidesModal from '../components/sides/GenerateSidesModal';
+import AutogenerateSidesModal from '../components/sides/AutogenerateSidesModal';
 import { useAuth } from '../context/AuthContext';
 
 function SidesPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const isEditor = user?.role === 'admin' || user?.role === 'editor';
   const [showGenerateSides, setShowGenerateSides] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [autogen, setAutogen] = useState(null); // { scriptId, callSheetId, scheduleId } | null
+
+  // For the Autogenerate button: we need the active script + latest call sheet/schedule.
+  const { data: activeScriptData } = useQuery({
+    queryKey: ['active-script'],
+    queryFn: () => scriptsApi.getActive().then(r => r.data),
+    enabled: isEditor,
+  });
+  const { data: schedulesData } = useQuery({
+    queryKey: ['schedules-all'],
+    queryFn: () => scheduleApi.list({ limit: 1 }).then(r => r.data),
+    enabled: isEditor,
+  });
+  // Historical scripts also carry usable scenes/pages, so the Generate gate
+  // accepts an active script OR any script in history.
+  const { data: scriptsHistoryData } = useQuery({
+    queryKey: ['scripts-history'],
+    queryFn: () => scriptsApi.getHistory({ limit: 1 }).then(r => r.data),
+    enabled: isEditor,
+  });
+
+  const handleAutogenerate = () => {
+    const activeScript = activeScriptData?.script;
+    if (!activeScript?.currentVersion) {
+      return toast.error('No published script available. Please upload script to generate sides');
+    }
+    // Call sheet is selected/uploaded inside the popup.
+    setAutogen({
+      scriptId: activeScript._id,
+      scheduleId: schedulesData?.schedules?.[0]?._id || null,
+    });
+  };
+
+  const handleGenerateSides = () => {
+    const hasScript = !!activeScriptData?.script?.currentVersion;
+    const hasHistory = (scriptsHistoryData?.scripts?.length || 0) > 0;
+    if (!hasScript && !hasHistory) {
+      return toast.error('No active script or pages found. Please upload script to pages to generate sides');
+    }
+    setShowGenerateSides(true);
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ['sides'],
@@ -53,16 +97,26 @@ function SidesPage() {
           <p style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>Extract scene-specific pages from your scripts</p>
         </div>
         {isEditor && (
-          <button className="btn-primary" onClick={() => setShowGenerateSides(true)} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-            Customize Sides
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn-primary" onClick={handleAutogenerate} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" /></svg>
+              Autogenerate Sides
+            </button>
+            <button className="btn-secondary" onClick={handleGenerateSides} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Generate Sides
+            </button>
+            <button className="btn-secondary" onClick={() => navigate('/script')} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Add Script/Pages
+            </button>
+          </div>
         )}
       </div>
 
       {isLoading ? <div className="loading-spinner">Loading...</div>
       : !data?.sides?.length ? (
-        <Empty icon={'\uD83D\uDCC4'} title="No sides yet" desc="Generate sides from your script using a call sheet or scene selection" action={isEditor ? () => setShowGenerateSides(true) : null} actionLabel="Customize Sides" />
+        <Empty icon={'\uD83D\uDCC4'} title="No sides yet" desc="Generate sides from your script using a call sheet or scene selection" action={isEditor ? handleGenerateSides : null} actionLabel="Generate Sides" />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {data.sides.map(s => (
@@ -125,6 +179,14 @@ function SidesPage() {
         <GenerateSidesModal
           onClose={() => setShowGenerateSides(false)}
           onSuccess={() => { setShowGenerateSides(false); queryClient.invalidateQueries({ queryKey: ['sides'] }); }} />
+      )}
+
+      {autogen && (
+        <AutogenerateSidesModal
+          scriptId={autogen.scriptId}
+          scheduleId={autogen.scheduleId}
+          onClose={() => setAutogen(null)}
+          onSuccess={() => { setAutogen(null); queryClient.invalidateQueries({ queryKey: ['sides'] }); }} />
       )}
     </div>
   );

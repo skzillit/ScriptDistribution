@@ -364,12 +364,11 @@ async function renderSceneImages(pdfBuffer, renderSpecs, options = {}) {
  *   - endPage, endPdfY, endFontHeightPdf — where to stop (the next scene's heading, or end of PDF)
  * Deduplicates: keeps only the FIRST occurrence of each scene number in the PDF.
  */
-function buildRenderSpecs(pdfSceneMap, requestedSceneNumbers, totalPages) {
+function buildRenderSpecs(pdfSceneMap, requestedSceneNumbers, totalPages, orderedSceneNumbers = null) {
   const specs = [];
   const seen = new Set();
-  const requested = new Set(
-    Array.from(requestedSceneNumbers).map(s => String(s).toUpperCase().replace(/PT$/, ''))
-  );
+  const norm = (s) => String(s).toUpperCase().replace(/PT$/, '');
+  const requested = new Set(Array.from(requestedSceneNumbers).map(norm));
 
   for (let i = 0; i < pdfSceneMap.length; i++) {
     const s = pdfSceneMap[i];
@@ -398,6 +397,19 @@ function buildRenderSpecs(pdfSceneMap, requestedSceneNumbers, totalPages) {
       endFontHeightPdf: next ? next.fontHeightPdf : null,
     });
   }
+
+  // Optional: emit specs in the caller's requested order (e.g. a user-defined
+  // scene sequence) instead of the default top→bottom script order.
+  if (Array.isArray(orderedSceneNumbers) && orderedSceneNumbers.length) {
+    const orderIdx = new Map();
+    orderedSceneNumbers.forEach((sn, i) => {
+      const k = norm(sn);
+      if (!orderIdx.has(k)) orderIdx.set(k, i);
+    });
+    const rank = (sn) => (orderIdx.has(sn) ? orderIdx.get(sn) : Number.MAX_SAFE_INTEGER);
+    specs.sort((a, b) => rank(a.sceneNumber) - rank(b.sceneNumber));
+  }
+
   return specs;
 }
 
@@ -636,7 +648,7 @@ function offsetToPage(offset, pageOffsets) {
 /**
  * Extract sides by scene number (not by page).
  */
-async function extractSides(sidesId, versionId, sceneNumbers) {
+async function extractSides(sidesId, versionId, sceneNumbers, options = {}) {
   const sides = await Sides.findById(sidesId);
   if (!sides) return;
 
@@ -760,8 +772,13 @@ async function extractSides(sidesId, versionId, sceneNumbers) {
       const pdfTotalPages = probeDoc.numPages;
       await probeDoc.destroy();
 
-      // Build render specs from PDF scene map
-      const renderSpecs = buildRenderSpecs(pdfSceneMap, requestedScenes, pdfTotalPages);
+      // Build render specs from PDF scene map. When the caller requested a
+      // specific scene order (e.g. autogenerate "rearrange order"), emit scenes
+      // in that order instead of the default script order.
+      const renderSpecs = buildRenderSpecs(
+        pdfSceneMap, requestedScenes, pdfTotalPages,
+        options.ordered ? sceneNumbers : null
+      );
 
       console.log('[sides] PDF scene map found:', pdfSceneMap.map(s => `${s.sceneNumber}@p${s.pageNumber}`).join(', '));
       console.log('[sides] Requested scenes:', Array.from(requestedScenes).join(', '));

@@ -23,6 +23,8 @@ router.get('/sides', moduleAuth, ctrl.listSides);
 router.get('/sides/:id', moduleAuth, ctrl.getSides);
 router.get('/sides/:id/download', moduleAuth, ctrl.downloadSides);
 router.get('/sides/:id/view', optionalAuth, ctrl.getSidesHtml);
+router.post('/sides/:id/publish', moduleAuth, requireRole('admin', 'editor'), ctrl.publishSides);
+router.post('/sides/:id/doc-distribution', moduleAuth, requireRole('admin', 'editor'), ctrl.moveSidesToDocDistribution);
 router.delete('/sides/:id', moduleAuth, requireRole('admin', 'editor'), ctrl.deleteSides);
 
 module.exports = router;

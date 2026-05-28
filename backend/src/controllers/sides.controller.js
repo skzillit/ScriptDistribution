@@ -15,11 +15,9 @@ async function uploadCallSheet(req, res) {
   if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
 
   try {
-    // Archive existing call sheets (move to history)
-    await CallSheet.updateMany(
-      { uploadedBy: req.user._id, status: { $ne: 'archived' } },
-      { $set: { status: 'archived' } }
-    );
+    // Do NOT archive existing call sheets. Uploading a new one keeps the
+    // previously published call sheet(s) too, so the "Autogenerate Sides" popup
+    // can show both and let the user pick which to generate from.
 
     // Extract text from uploaded call sheet
     const { text } = await extractTextFromPdf(req.file.buffer);
@@ -45,12 +43,13 @@ async function uploadCallSheet(req, res) {
       weather: metadata.weather,
       notes: req.body.notes,
       status: 'draft',
+      // Uploads from the Autogenerate popup are 'uploaded' (deletable there);
+      // anything else is treated as a 'published' call sheet.
+      source: req.body.source === 'uploaded' ? 'uploaded' : 'published',
     });
 
-    // Auto-generate sides from this call sheet
-    autoGenerateSides(req.user, callSheet).catch(err => {
-      console.error('Auto-generate sides error:', err.message);
-    });
+    // NOTE: Sides are NOT auto-generated on upload. The user generates them
+    // explicitly from the "Autogenerate Sides" popup after choosing a call sheet.
 
     res.status(201).json({
       callSheet,
@@ -431,8 +430,13 @@ async function downloadCallSheet(req, res) {
 }
 
 async function deleteCallSheet(req, res) {
-  const callSheet = await CallSheet.findOneAndDelete({ _id: req.params.id, uploadedBy: req.user._id });
+  const callSheet = await CallSheet.findOne({ _id: req.params.id, uploadedBy: req.user._id });
   if (!callSheet) return res.status(404).json({ error: 'Call sheet not found' });
+  // Only ad-hoc uploaded call sheets can be deleted; published ones are protected.
+  if (callSheet.source !== 'uploaded') {
+    return res.status(403).json({ error: 'Only uploaded call sheets can be deleted.' });
+  }
+  await callSheet.deleteOne();
   // Also delete associated sides
   await Sides.deleteMany({ callSheet: callSheet._id });
   res.json({ success: true });
@@ -614,11 +618,15 @@ async function generateSides(req, res) {
   const titleStr = title
     || `${useAI ? '[AI] ' : ''}Sides - Scenes ${sceneNumbers.slice(0, 5).join(', ')}${sceneNumbers.length > 5 ? '...' : ''}`;
 
-  // Move all existing active sides to archived (history)
-  await Sides.updateMany(
-    { generatedBy: req.user._id, status: { $in: ['generating', 'ready'] } },
-    { $set: { status: 'archived' } }
-  );
+  // Move existing active sides to archived (history). Skip this when generating
+  // a review draft (publish:false) — the currently published sides stay until the
+  // draft is explicitly published.
+  if (req.body.publish !== false) {
+    await Sides.updateMany(
+      { generatedBy: req.user._id, status: { $in: ['generating', 'ready'] } },
+      { $set: { status: 'archived' } }
+    );
+  }
 
   const sides = await Sides.create({
     callSheet: callSheetId || null,
@@ -639,6 +647,9 @@ async function generateSides(req, res) {
     callSheetPages: callSheetPages || 'all',
     generatedBy: req.user._id,
     status: 'generating',
+    // When the client requests a review step (publish:false), hold the sides out
+    // of the Sides module until the user explicitly publishes it.
+    published: req.body.publish === false ? false : true,
   });
 
   if (multiVersion) {
@@ -651,7 +662,7 @@ async function generateSides(req, res) {
       console.error('Background AI sides extraction error:', err);
     });
   } else {
-    extractSides(sides._id, targetVersionId, sceneNumbers).catch(err => {
+    extractSides(sides._id, targetVersionId, sceneNumbers, { ordered: !!req.body.orderedScenes }).catch(err => {
       console.error('Background sides extraction error:', err);
     });
   }
@@ -671,6 +682,9 @@ async function listSides(req, res) {
     filter.status = 'archived';
   } else {
     filter.status = { $in: ['generating', 'ready'] };
+    // Hide unpublished review drafts from the Sides module (older records have
+    // no `published` field, so $ne:false keeps them visible).
+    filter.published = { $ne: false };
   }
 
   const sides = await Sides.find(filter)
@@ -694,6 +708,39 @@ async function getSides(req, res) {
     .populate('generatedBy', 'name');
 
   if (!sides) return res.status(404).json({ error: 'Sides not found' });
+  res.json({ sides });
+}
+
+// Publish a reviewed draft into the Sides module. Archives the previously
+// published sides for this user (mirrors the direct-generate behaviour).
+async function publishSides(req, res) {
+  const sides = await Sides.findById(req.params.id);
+  if (!sides) return res.status(404).json({ error: 'Sides not found' });
+
+  await Sides.updateMany(
+    { generatedBy: sides.generatedBy, status: { $in: ['generating', 'ready'] }, _id: { $ne: sides._id }, published: { $ne: false } },
+    { $set: { status: 'archived' } }
+  );
+
+  sides.published = true;
+  await sides.save();
+  // Notify clients so the Sides list refreshes live.
+  try {
+    require('../realtime').broadcast('sides:updated', {
+      id: String(sides._id), status: sides.status, published: true,
+      title: sides.title || null, updatedAt: new Date().toISOString(),
+    });
+  } catch (_) { /* non-fatal */ }
+  res.json({ sides });
+}
+
+// Move a reviewed draft to Doc Distribution (kept out of the Sides module).
+async function moveSidesToDocDistribution(req, res) {
+  const sides = await Sides.findById(req.params.id);
+  if (!sides) return res.status(404).json({ error: 'Sides not found' });
+  sides.docDistribution = true;
+  sides.published = false; // stays out of the Sides module
+  await sides.save();
   res.json({ sides });
 }
 
@@ -1417,5 +1464,6 @@ module.exports = {
   uploadCallSheet, listCallSheets, getCallSheet, updateCallSheet, deleteCallSheet,
   viewCallSheetHtml, downloadCallSheet,
   generateSides, listSides, getSides, downloadSides, deleteSides, getSidesHtml,
+  publishSides, moveSidesToDocDistribution,
   getScriptScenes,
 };

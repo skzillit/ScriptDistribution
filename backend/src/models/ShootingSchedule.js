@@ -50,6 +50,9 @@ const shootingScheduleSchema = new mongoose.Schema({
   endDate: String,
   notes: String,
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
+  // 'published' = official schedule(s); 'uploaded' = ad-hoc from the Autogenerate
+  // Sides popup (deletable there).
+  source: { type: String, enum: ['published', 'uploaded'], default: 'published' },
 }, { timestamps: true });
 
 shootingScheduleSchema.index({ project: 1 });

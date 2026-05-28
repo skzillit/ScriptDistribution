@@ -57,6 +57,10 @@ const sidesSchema = new mongoose.Schema({
   generatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   downloadCount: { type: Number, default: 0 },
   status: { type: String, enum: ['generating', 'ready', 'error', 'archived'], default: 'generating' },
+  // Review gate: generated sides stay unpublished (hidden from the Sides module)
+  // until the user clicks "Publish". Default true keeps older records visible.
+  published: { type: Boolean, default: true },
+  docDistribution: { type: Boolean, default: false },
   error: String,
 }, { timestamps: true });
 

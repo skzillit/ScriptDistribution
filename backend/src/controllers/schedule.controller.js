@@ -26,6 +26,7 @@ async function uploadSchedule(req, res) {
       endDate: parsed.endDate,
       notes: req.body.notes || '',
       status: 'draft',
+      source: req.body.source === 'uploaded' ? 'uploaded' : 'published',
     });
 
     res.status(201).json({
@@ -86,8 +87,13 @@ async function updateSchedule(req, res) {
 }
 
 async function deleteSchedule(req, res) {
-  const schedule = await ShootingSchedule.findOneAndDelete({ _id: req.params.id, uploadedBy: req.user._id });
+  const schedule = await ShootingSchedule.findOne({ _id: req.params.id, uploadedBy: req.user._id });
   if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+  // Only ad-hoc uploaded schedules can be deleted; published ones are protected.
+  if (schedule.source !== 'uploaded') {
+    return res.status(403).json({ error: 'Only uploaded schedules can be deleted.' });
+  }
+  await schedule.deleteOne();
   res.json({ success: true });
 }
 

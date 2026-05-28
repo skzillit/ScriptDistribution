@@ -1,13 +1,13 @@
 import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { callSheetApi } from '../../api/scripts.api';
+import { scheduleApi } from '../../api/scripts.api';
 import { toast } from 'react-toastify';
 
 /**
- * Call sheet upload form. The list of published call sheets lives in the
- * "Autogenerate Sides" popup's dropdown — this is purely the upload section.
+ * Shooting schedule upload form. The list of schedules lives in the
+ * "Autogenerate Sides" popup — this is purely the upload section.
  */
-function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
+function UploadScheduleModal({ scriptId, source, onClose, onSuccess }) {
   const [title, setTitle] = useState('');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -16,7 +16,7 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
   const onDrop = useCallback((acceptedFiles) => {
     if (acceptedFiles.length > 0) {
       setFile(acceptedFiles[0]);
-      if (!title) setTitle(`Call Sheet - ${new Date().toLocaleDateString()}`);
+      if (!title) setTitle(`Shooting Schedule - ${new Date().toLocaleDateString()}`);
     }
   }, [title]);
 
@@ -29,7 +29,6 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!file) return;
-
     setUploading(true);
     try {
       const formData = new FormData();
@@ -38,12 +37,11 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
       if (scriptId) formData.append('scriptId', scriptId);
       if (source) formData.append('source', source);
 
-      const { data } = await callSheetApi.upload(formData, (e) => {
+      const { data } = await scheduleApi.upload(formData, (e) => {
         if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
       });
-
-      toast.success(`Call sheet added! ${data.sceneCount} scenes found.`);
-      onSuccess(data.callSheet);
+      toast.success('Schedule added!');
+      onSuccess(data.schedule);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Upload failed');
     } finally {
@@ -55,23 +53,18 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
       backdropFilter: 'blur(8px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100,
     }} onClick={onClose}>
-      <div className="card" style={{ width: '520px', maxHeight: '92vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)' }} onClick={e => e.stopPropagation()}>
+      <div className="card" style={{ width: '480px', boxShadow: 'var(--shadow-lg)' }} onClick={e => e.stopPropagation()}>
         <h2 style={{
           marginBottom: '20px', fontSize: '22px', fontWeight: '800',
           background: 'var(--gradient-accent)',
           WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-        }}>Add Call Sheet</h2>
-
+        }}>Add Schedule</h2>
         <form onSubmit={handleSubmit}>
           <div {...getRootProps()} style={{
-            border: '2px dashed var(--border)',
-            borderRadius: 'var(--radius)',
-            padding: '28px',
-            textAlign: 'center',
-            marginBottom: '16px',
-            cursor: 'pointer',
+            border: '2px dashed var(--border)', borderRadius: 'var(--radius)',
+            padding: '28px', textAlign: 'center', marginBottom: '16px', cursor: 'pointer',
             background: isDragActive ? 'var(--bg-secondary)' : 'transparent',
           }}>
             <input {...getInputProps()} />
@@ -84,14 +77,14 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
               </div>
             ) : (
               <div style={{ color: 'var(--text-secondary)' }}>
-                {isDragActive ? 'Drop call sheet PDF here' : 'Drag & drop a call sheet PDF, or click to browse'}
+                {isDragActive ? 'Drop schedule PDF here' : 'Drag & drop a schedule PDF, or click to browse'}
               </div>
             )}
           </div>
 
           <div style={{ marginBottom: '16px' }}>
             <label style={{ fontSize: '13px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Title</label>
-            <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Call Sheet title" />
+            <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Schedule title" />
           </div>
 
           {uploading && (
@@ -105,7 +98,7 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
             <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
             <button type="submit" className="btn-primary" disabled={!file || uploading}>
-              {uploading ? 'Processing...' : 'Add Call Sheet'}
+              {uploading ? 'Processing...' : 'Add Schedule'}
             </button>
           </div>
         </form>
@@ -114,4 +107,4 @@ function UploadCallSheetModal({ scriptId, source, onClose, onSuccess }) {
   );
 }
 
-export default UploadCallSheetModal;
+export default UploadScheduleModal;
