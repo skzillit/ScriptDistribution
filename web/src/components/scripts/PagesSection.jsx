@@ -118,7 +118,9 @@ function PageEditorModal({ scriptId, folder, onClose, onSaved }) {
 
   const L = { fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px', fontWeight: '600', letterSpacing: '0.5px', textTransform: 'uppercase' };
 
-  return (
+  // Render to <body> so the fixed overlay isn't trapped by the parent .card's
+  // backdrop-filter (which would otherwise position it relative to the card).
+  return createPortal(
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
       <div className="card" style={{ width: '480px', maxHeight: '92vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)' }} onClick={e => e.stopPropagation()}>
         <h2 style={{ marginBottom: '18px', fontSize: '20px', fontWeight: '800' }}>{isEdit ? 'Edit Page' : 'Add Page'}</h2>
@@ -159,6 +161,7 @@ function PageEditorModal({ scriptId, folder, onClose, onSaved }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
