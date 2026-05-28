@@ -17,7 +17,9 @@ function App() {
   }
 
   const role = user?.role || 'viewer';
-  const defaultRoute = role === 'viewer' ? '/sides' : '/callsheet';
+  // Sides is the app's home for every role — call sheets are managed inside the
+  // sides generation popups, not on a standalone page.
+  const defaultRoute = '/sides';
 
   return (
     <>
