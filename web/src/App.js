@@ -5,12 +5,9 @@ import Header from './components/common/Header';
 import Sidebar from './components/common/Sidebar';
 import DashboardPage from './pages/DashboardPage';
 import ScriptDetailPage from './pages/ScriptDetailPage';
-import BreakdownPage from './pages/BreakdownPage';
-import AnalyticsPage from './pages/AnalyticsPage';
 import SidesPage from './pages/SidesPage';
 import CallSheetPage from './pages/CallSheetPage';
 import SchedulePageNew from './pages/SchedulePageNew';
-import ScriptBreakdownPage from './pages/ScriptBreakdownPage';
 
 function App() {
   const { user, loading } = useAuth();
@@ -35,10 +32,7 @@ function App() {
                 <Route path="/callsheet" element={<CallSheetPage />} />
                 <Route path="/script" element={<DashboardPage />} />
                 <Route path="/scripts/:id" element={<ScriptDetailPage />} />
-                <Route path="/scripts/:id/breakdown/:versionId" element={<BreakdownPage />} />
-                <Route path="/scripts/:id/analytics" element={<AnalyticsPage />} />
                 <Route path="/schedule" element={<SchedulePageNew />} />
-                <Route path="/scripts/:id/script-breakdown" element={<ScriptBreakdownPage />} />
               </>
             )}
             <Route path="/sides" element={<SidesPage />} />

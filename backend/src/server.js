@@ -15,12 +15,9 @@ const realtime = require('./realtime');
 const authRoutes = require('./routes/auth.routes');
 const scriptsRoutes = require('./routes/scripts.routes');
 const versionsRoutes = require('./routes/versions.routes');
-const breakdownRoutes = require('./routes/breakdown.routes');
 const highlightRoutes = require('./routes/highlight.routes');
-const analyticsRoutes = require('./routes/analytics.routes');
 const sidesRoutes = require('./routes/sides.routes');
 const scheduleRoutes = require('./routes/schedule.routes');
-const scriptBreakdownRoutes = require('./routes/scriptBreakdown.routes');
 const scenePagesRoutes = require('./routes/scenePages.routes');
 
 const app = express();
@@ -58,12 +55,9 @@ app.use('/shared', express.static(sharedPath));
 app.use('/api/auth', authRoutes);
 app.use('/api/scripts', scriptsRoutes);
 app.use('/api/versions', versionsRoutes);
-app.use('/api', breakdownRoutes);
 app.use('/api/highlight', highlightRoutes);
-app.use('/api/analytics', analyticsRoutes);
 app.use('/api', sidesRoutes);
 app.use('/api', scheduleRoutes);
-app.use('/api', scriptBreakdownRoutes);
 app.use('/api', scenePagesRoutes);
 
 // Local file serving (when USE_LOCAL_STORAGE=true)

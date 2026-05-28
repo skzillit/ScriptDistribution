@@ -40,23 +40,6 @@ export const scenePagesApi = {
   scenes: (id) => client.get(`/pages/${id}/scenes`),
 };
 
-export const breakdownApi = {
-  trigger: (versionId, provider, mode) => {
-    const params = new URLSearchParams();
-    if (provider) params.set('provider', provider);
-    if (mode) params.set('mode', mode);
-    const qs = params.toString();
-    return client.post(`/versions/${versionId}/breakdown${qs ? `?${qs}` : ''}`);
-  },
-  get: (versionId) => client.get(`/versions/${versionId}/breakdown`),
-  updateElement: (breakdownId, elementId, data) =>
-    client.put(`/breakdown/${breakdownId}/elements/${elementId}`, data),
-  addElement: (breakdownId, data) =>
-    client.post(`/breakdown/${breakdownId}/elements`, data),
-  deleteElement: (breakdownId, elementId) =>
-    client.delete(`/breakdown/${breakdownId}/elements/${elementId}`),
-};
-
 export const callSheetApi = {
   upload: (formData, onProgress) =>
     client.post('/callsheets', formData, {
@@ -94,22 +77,3 @@ export const scheduleApi = {
   download: (id) => client.get(`/schedules/${id}/download`),
 };
 
-export const analyticsApi = {
-  recordEvent: (data) => client.post('/analytics/event', data),
-  getAnalytics: (scriptId, params) => client.get(`/analytics/scripts/${scriptId}`, { params }),
-  getViewers: (scriptId) => client.get(`/analytics/scripts/${scriptId}/viewers`),
-  getDownloads: (scriptId) => client.get(`/analytics/scripts/${scriptId}/downloads`),
-};
-
-export const scriptBreakdownApi = {
-  getScenesList: (versionId) => client.get(`/versions/${versionId}/scenes-list`),
-  getCategories: (scriptId) => client.get(`/scripts/${scriptId}/breakdown/categories`),
-  getBreakdownSheet: (scriptId, sceneId) => client.get(`/scripts/${scriptId}/breakdown/scenes/${sceneId}`),
-  tagText: (scriptId, sceneId, data) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/tag`, data),
-  removeTag: (scriptId, tagId) => client.delete(`/scripts/${scriptId}/breakdown/tags/${tagId}`),
-  aiAnalyze: (scriptId, sceneId) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/ai-analyze`),
-  bulkDecisions: (scriptId, sceneId, decisions) => client.post(`/scripts/${scriptId}/breakdown/scenes/${sceneId}/bulk-decisions`, { decisions }),
-  getElements: (scriptId, params) => client.get(`/scripts/${scriptId}/breakdown/elements`, { params }),
-  updateScene: (scriptId, sceneId, updates) => client.patch(`/scripts/${scriptId}/scenes/${sceneId}`, updates),
-  getCast: (scriptId) => client.get(`/scripts/${scriptId}/cast`),
-};

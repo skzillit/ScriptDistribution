@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { scriptsApi, breakdownApi } from '../api/scripts.api';
+import { scriptsApi } from '../api/scripts.api';
 import { getApiBaseUrl } from '../api/client';
 import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
@@ -14,16 +14,6 @@ function ScriptDetailPage() {
   const { data: scriptData, isLoading } = useQuery({
     queryKey: ['script', id],
     queryFn: () => scriptsApi.get(id).then(r => r.data),
-  });
-
-  const breakdownMutation = useMutation({
-    mutationFn: ({ versionId, mode }) =>
-      breakdownApi.trigger(versionId, null, mode),
-    onSuccess: (res, { versionId }) => {
-      toast.success('Breakdown ready! Redirecting...');
-      setTimeout(() => navigate(`/scripts/${id}/breakdown/${versionId}`), 500);
-    },
-    onError: (err) => toast.error(err.response?.data?.error || 'Failed to start breakdown'),
   });
 
   const downloadMutation = useMutation({
@@ -65,11 +55,6 @@ function ScriptDetailPage() {
               <span>Uploaded {dayjs(script.createdAt).format('MMM D, YYYY')}</span>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn-secondary" onClick={() => navigate(`/scripts/${id}/analytics`)}>
-              Analytics
-            </button>
-          </div>
         </div>
         {script.description && (
           <p style={{ marginTop: '12px', color: 'var(--text-secondary)', fontSize: '14px' }}>{script.description}</p>
@@ -90,10 +75,6 @@ function ScriptDetailPage() {
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
               </svg>
               View Script
-            </button>
-            <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-              onClick={() => navigate(`/scripts/${id}/script-breakdown`)}>
-              <span>{'\uD83D\uDD0D'}</span> Script Breakdown
             </button>
             <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
               onClick={() => downloadMutation.mutate(versionId)}>

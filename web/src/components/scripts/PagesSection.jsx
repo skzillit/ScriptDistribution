@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { scenePagesApi } from '../../api/scripts.api';
 import { getApiBaseUrl } from '../../api/client';

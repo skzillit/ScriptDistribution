@@ -127,16 +127,10 @@ function DashboardPage() {
                 Open Script
               </button>
               {version && (
-                <>
-                  <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-                    onClick={() => window.location.href = `${getApiBaseUrl()}/api/highlight/${version._id}`}>
-                    View Script
-                  </button>
-                  <button className="btn-secondary"
-                    onClick={() => navigate(`/scripts/${activeScript._id}/analytics`)}>
-                    Analytics
-                  </button>
-                </>
+                <button className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+                  onClick={() => window.location.href = `${getApiBaseUrl()}/api/highlight/${version._id}`}>
+                  View Script
+                </button>
               )}
             </div>
           </div>

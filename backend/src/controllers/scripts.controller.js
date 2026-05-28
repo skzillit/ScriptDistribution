@@ -3,7 +3,6 @@ const ScriptVersion = require('../models/ScriptVersion');
 const ScriptPage = require('../models/ScriptPage');
 const { uploadFile, getScriptPdfKey } = require('../services/storage.service');
 const { extractPagesFromPdf } = require('../services/pdf.service');
-const { parseScreenplayPage, extractSceneNumbers } = require('../utils/scriptParser');
 
 async function listScripts(req, res) {
   const { page = 1, limit = 20, status } = req.query;
@@ -174,20 +173,16 @@ async function uploadVersion(req, res) {
     version.status = 'ready';
     await version.save();
 
-    // Create page records (filter out empty pages)
+    // Store page text only. Scripts are used solely to generate sides (which
+    // detect/crop scenes directly from the PDF), so we no longer run screenplay
+    // breakdown parsing (elements / per-page scene numbers) on upload.
     const pageDocs = pages
       .filter(p => p.rawText && p.rawText.trim().length > 0)
-      .map(p => {
-        const elements = parseScreenplayPage(p.rawText);
-        const sceneNumbers = extractSceneNumbers(elements).map(s => s.sceneNumber);
-        return {
-          scriptVersion: version._id,
-          pageNumber: p.pageNumber,
-          rawText: p.rawText,
-          elements,
-          sceneNumbers,
-        };
-      });
+      .map(p => ({
+        scriptVersion: version._id,
+        pageNumber: p.pageNumber,
+        rawText: p.rawText,
+      }));
     if (pageDocs.length > 0) {
       await ScriptPage.insertMany(pageDocs);
     }
@@ -234,8 +229,17 @@ async function getPage(req, res) {
   res.json({ page });
 }
 
+// Returns a signed URL to download a script version's PDF.
+async function downloadVersion(req, res) {
+  const version = await ScriptVersion.findById(req.params.versionId);
+  if (!version || !version.pdfUrl) return res.status(404).json({ error: 'Version not found' });
+  const { getDownloadUrl } = require('../services/storage.service');
+  const url = await getDownloadUrl(version.pdfUrl);
+  res.json({ downloadUrl: url });
+}
+
 module.exports = {
   listScripts, createScript, getScript, updateScript, deleteScript,
   addCollaborator, uploadVersion, listVersions, getVersion, getPages, getPage,
-  getActiveScript, listHistory, restoreScript,
+  getActiveScript, listHistory, restoreScript, downloadVersion,
 };
