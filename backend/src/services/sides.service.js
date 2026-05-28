@@ -71,10 +71,12 @@ async function buildPdfSceneMap(pdfBuffer) {
     const viewport = page.getViewport({ scale: 1 });
     const tc = await page.getTextContent();
 
-    // Group items into lines by PDF-space Y (bottom-up).
+    // Group items into lines by PDF-space Y (bottom-up). Keep whitespace items
+    // and raw strings — some PDFs emit text glyph-by-glyph (e.g. "I","N","T")
+    // with separate space glyphs, so the line text must be rebuilt positionally.
     const linesMap = [];
     for (const it of tc.items) {
-      if (!it.str || !it.str.trim()) continue;
+      if (!it.str) continue;
       const pdfY = it.transform ? it.transform[5] : 0;
       const pdfX = it.transform ? it.transform[4] : 0;
       const h = it.height || 12;
@@ -84,12 +86,32 @@ async function buildPdfSceneMap(pdfBuffer) {
         line = { pdfY, items: [], maxHeight: h, text: '' };
         linesMap.push(line);
       }
-      line.items.push({ str: it.str.trim(), pdfX, pdfW: w });
+      line.items.push({ str: it.str, pdfX, pdfW: w });
       if (h > line.maxHeight) line.maxHeight = h;
     }
     for (const l of linesMap) {
       l.items.sort((a, b) => a.pdfX - b.pdfX);
-      l.text = l.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      // Rebuild line text: concatenate glyphs/words, inserting a space for
+      // explicit space glyphs OR a positional gap wider than ~¼ of the font size.
+      const spaceThresh = (l.maxHeight || 12) * 0.25;
+      let text = '';
+      let prevEnd = null;
+      for (const it of l.items) {
+        if (/^\s+$/.test(it.str)) {
+          if (text && !text.endsWith(' ')) text += ' ';
+          prevEnd = it.pdfX + (it.pdfW || 0);
+          continue;
+        }
+        if (prevEnd !== null) {
+          const gap = it.pdfX - prevEnd;
+          if (gap > spaceThresh && text && !text.endsWith(' ')) text += ' ';
+        }
+        text += it.str;
+        prevEnd = it.pdfX + (it.pdfW || 0);
+      }
+      l.text = text.replace(/\s+/g, ' ').trim();
+      // Trimmed token list for margin scene-number detection.
+      l.items = l.items.map(i => ({ ...i, str: i.str.trim() })).filter(i => i.str);
     }
     linesMap.sort((a, b) => b.pdfY - a.pdfY); // top→bottom
 
@@ -141,12 +163,11 @@ async function buildPdfSceneMap(pdfBuffer) {
         }
       }
 
-      if (!num) continue;
-
       // Strip PT (part) suffix — "107PT" → "107"
-      num = num.toUpperCase().replace(/PT$/, '');
-      if (!num) continue;
+      if (num) num = num.toUpperCase().replace(/PT$/, '') || null;
 
+      // Keep every detected INT/EXT heading (numbered or not). Numbering is
+      // resolved after all pages are scanned (see below).
       scenes.push({
         sceneNumber: num,
         heading: line.text,
@@ -161,7 +182,14 @@ async function buildPdfSceneMap(pdfBuffer) {
 
   await pdf.cleanup();
   await pdf.destroy();
-  return scenes;
+
+  // If the script carries real scene numbers, keep only the numbered headings
+  // (unnumbered lines are continuations). If NOTHING is numbered — e.g. a spec
+  // or draft script with bare INT./EXT. slugs — auto-number the detected
+  // headings sequentially so sides can still be generated from them.
+  const numbered = scenes.filter(s => s.sceneNumber);
+  if (numbered.length > 0) return numbered;
+  return scenes.map((s, i) => ({ ...s, sceneNumber: String(i + 1) }));
 }
 
 /**
