@@ -45,6 +45,10 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
+// Wrap every JSON response in the project envelope { status, message, messageElements, data }.
+// Applies only to /api/* so static / highlight HTML / local file serving are untouched.
+app.use('/api/', require('./middleware/responseEnvelope'));
+
 // Serve shared highlight assets (check both local dev and deployed paths)
 const sharedPath = require('fs').existsSync(path.join(__dirname, '../../shared'))
   ? path.join(__dirname, '../../shared')
