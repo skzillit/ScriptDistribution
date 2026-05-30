@@ -18,6 +18,9 @@ function AutogenerateSidesModal({ scriptId, scheduleId, onClose, onSuccess }) {
   const [selectedId, setSelectedId] = useState('');
   const [rearrange, setRearrange] = useState(false);
   const [orderInput, setOrderInput] = useState('');
+  // 'hide' = only selected scenes (default), 'crossout' = full pages with
+  // unselected scenes struck through.
+  const [sceneDisplayMode, setSceneDisplayMode] = useState('hide');
   const [generating, setGenerating] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   // Schedule selection (mirrors call sheet): pick existing or upload new.
@@ -173,6 +176,7 @@ function AutogenerateSidesModal({ scriptId, scheduleId, onClose, onSuccess }) {
         includeCallSheetScenes: false,
         orderedScenes: true,
         publish: false,
+        sceneDisplayMode,
         title: callSheet?.title ? `Sides - ${callSheet.title}` : undefined,
       });
       const sidesId = data.sides._id;
@@ -341,6 +345,32 @@ function AutogenerateSidesModal({ scriptId, scheduleId, onClose, onSuccess }) {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Unselected-scene handling */}
+        <div style={{ marginBottom: '16px' }}>
+          <label style={L}>Unselected scenes</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {[
+              { val: 'hide', title: 'Hide unselected scenes', desc: 'Only the selected scenes appear (current behavior).' },
+              { val: 'crossout', title: 'Cross out unselected scenes', desc: 'Keep full pages; strike through scenes not selected.' },
+            ].map(opt => (
+              <div key={opt.val} onClick={() => setSceneDisplayMode(opt.val)}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer',
+                  border: `1px solid ${sceneDisplayMode === opt.val ? 'var(--accent)' : 'var(--border)'}`,
+                  background: sceneDisplayMode === opt.val ? 'var(--accent-glow)' : 'transparent' }}>
+                <span style={{ width: '16px', height: '16px', borderRadius: '50%', marginTop: '2px', flexShrink: 0,
+                  border: `2px solid ${sceneDisplayMode === opt.val ? 'var(--accent)' : 'var(--text-muted)'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {sceneDisplayMode === opt.val && <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent)' }} />}
+                </span>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>{opt.title}</span>
+                  <span style={{ display: 'block', fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{opt.desc}</span>
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>

@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { moduleAuth } = require('../middleware/moduleAuth');
 const { requireRole } = require('../middleware/roleAuth');
-const { pdfUpload } = require('../middleware/upload');
+// Pages accept PDF or Final Draft (.fdx), same as scripts.
+const { scriptUpload: pdfUpload } = require('../middleware/upload');
 const ctrl = require('../controllers/scenePages.controller');
 
 // Scene folders ("Pages") attached to a script.

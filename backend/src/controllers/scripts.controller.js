@@ -23,12 +23,7 @@ async function listScripts(req, res) {
 async function createScript(req, res) {
   const { title, description, format, genre, tags } = req.body;
 
-  // Only one active script allowed — move existing active scripts to archived (history)
-  await Script.updateMany(
-    { owner: req.user._id, status: { $ne: 'archived' } },
-    { $set: { status: 'archived' } }
-  );
-
+  // Multiple scripts can coexist (each can have its own pages). No auto-archiving.
   const script = await Script.create({
     title,
     description,
@@ -106,12 +101,16 @@ async function updateScript(req, res) {
 async function deleteScript(req, res) {
   const script = await Script.findOneAndDelete({ _id: req.params.id, owner: req.user._id });
   if (!script) return res.status(404).json({ error: 'Script not found' });
-  // Clean up versions and pages
+  // Clean up versions, extracted text pages, and the scene-folder "Pages".
   const versions = await ScriptVersion.find({ script: script._id });
   for (const v of versions) {
     await ScriptPage.deleteMany({ scriptVersion: v._id });
   }
   await ScriptVersion.deleteMany({ script: script._id });
+  try {
+    const ScenePage = require('../models/ScenePage');
+    await ScenePage.deleteMany({ script: script._id });
+  } catch (_) { /* ScenePage optional */ }
   res.json({ success: true });
 }
 

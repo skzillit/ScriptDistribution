@@ -147,8 +147,9 @@ function PageEditorModal({ scriptId, folder, onClose, onSaved }) {
         </div>
 
         <div style={{ marginBottom: '20px' }}>
-          <label style={L}>PDF {isEdit ? '(leave empty to keep current)' : ''}</label>
-          <input type="file" accept="application/pdf" onChange={e => setFile(e.target.files?.[0] || null)} />
+          <label style={L}>PDF or Final Draft (.fdx) {isEdit ? '(leave empty to keep current)' : ''}</label>
+          <input type="file" accept="application/pdf,.fdx,application/xml,text/xml"
+            onChange={e => setFile(e.target.files?.[0] || null)} />
           {isEdit && folder?.pageCount > 0 && !file && (
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>Current PDF: {folder.pageCount} page(s)</div>
           )}

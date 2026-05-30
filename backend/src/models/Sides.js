@@ -20,6 +20,9 @@ const sidesSchema = new mongoose.Schema({
   script: { type: mongoose.Schema.Types.ObjectId, ref: 'Script', required: true },
   title: { type: String, required: true },
   sceneNumbers: [String],
+  // User-defined render order across BOTH script scenes and page scenes
+  // (the "rearrange order" field). Empty = natural script/page order.
+  sceneOrder: [String],
   // Multi-version selection: pull specific scenes from specific script versions.
   // Empty for the common single-version case (then scriptVersion + sceneNumbers apply).
   versionScenes: [{
@@ -52,6 +55,9 @@ const sidesSchema = new mongoose.Schema({
   }],
   includeCallSheet: { type: Boolean, default: true },
   callSheetPages: { type: String, default: 'all' },
+  // How unselected scenes are rendered: 'hide' (only selected scenes — default)
+  // or 'crossout' (keep full pages, strike through the unselected scenes).
+  sceneDisplayMode: { type: String, enum: ['hide', 'crossout'], default: 'hide' },
   pdfUrl: String,
   scheduleStartPage: { type: Number, default: 0 },
   generatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

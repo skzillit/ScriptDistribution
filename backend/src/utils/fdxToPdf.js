@@ -32,7 +32,13 @@ function decodeEntities(s) {
 function parseFdx(xml) {
   // Restrict to the script body (ignore TitlePage paragraphs).
   const contentMatch = xml.match(/<Content\b[^>]*>([\s\S]*?)<\/Content>/i);
-  const body = contentMatch ? contentMatch[1] : xml;
+  let body = contentMatch ? contentMatch[1] : xml;
+
+  // Flatten <DualDialogue> wrappers — Final Draft nests Paragraphs inside them
+  // and our flat /<Paragraph>.*?<\/Paragraph>/ regex would otherwise misalign
+  // and silently drop the inner Character / Dialogue paragraphs (which in turn
+  // can leave a Scene Heading paragraph between them unmatched).
+  body = body.replace(/<DualDialogue\b[^>]*>/gi, '').replace(/<\/DualDialogue>/gi, '');
 
   const paragraphs = [];
   let autoScene = 0;
@@ -43,7 +49,7 @@ function parseFdx(xml) {
     const inner = m[2] || '';
 
     const typeMatch = attrs.match(/\bType="([^"]*)"/i);
-    const type = typeMatch ? typeMatch[1] : 'Action';
+    let type = typeMatch ? typeMatch[1] : 'Action';
 
     // Concatenate all <Text>…</Text> runs, strip inner tags, decode entities.
     let text = '';
@@ -54,15 +60,37 @@ function parseFdx(xml) {
     }
     text = decodeEntities(text.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
 
-    if (!text) continue;
+    // Final Draft authors often classify scene-like lines (INT./EXT./I/E,
+    // or bare "SCENE 33") as plain Action paragraphs. Promote them to
+    // Scene Heading so the renderer adds margin scene numbers and detection
+    // works downstream. Accepts optional leading scene number
+    // ("18 EXT. JUNGLE - DAY", "33 SCENE 33").
+    const slugRe = /^(?:\d+[A-Za-z]{0,3}\s+)?(INT|EXT|INT\/EXT|I\/E)[\.\s]/i;
+    const sceneWordRe = /^(?:\d+[A-Za-z]{0,3}\s+)?SCENE\b/i;
+    const isHeading = /scene heading/i.test(type) || slugRe.test(text) || sceneWordRe.test(text);
+    if (isHeading) type = 'Scene Heading';
 
     let sceneNumber;
-    if (/scene heading/i.test(type)) {
+    if (isHeading) {
+      // Scene number can live on <SceneProperties Number="…"/> OR directly on
+      // the <Paragraph Number="…"> attribute (older FDX). Accept either.
       const snMatch = inner.match(/<SceneProperties\b[^>]*\bNumber="([^"]*)"/i)
         || attrs.match(/\bNumber="([^"]*)"/i);
       autoScene += 1;
-      sceneNumber = (snMatch && snMatch[1].trim()) ? snMatch[1].trim() : String(autoScene);
+      // Inline leading number ("18 EXT. JUNGLE - DAY", "33 SCENE 33") — use it
+      // as the scene number when SceneProperties has none, and strip it from
+      // the heading text so it isn't duplicated next to the margin number.
+      const inlineLead = text.match(/^(\d+[A-Za-z]{0,3})\s+(?=INT|EXT|INT\/EXT|I\/E|SCENE)/i);
+      if (inlineLead) text = text.slice(inlineLead[0].length);
+      const explicit = (snMatch && snMatch[1].trim()) ? snMatch[1].trim() : null;
+      sceneNumber = explicit || (inlineLead && inlineLead[1]) || String(autoScene);
     }
+
+    // Scene headings ALWAYS make it through — even when the Text run is empty
+    // (omitted scenes, FDX quirks). Skipping them would lose the heading AND
+    // shift auto-numbering for every scene that follows.
+    if (!text && !isHeading) continue;
+    if (isHeading && !text) text = `SCENE ${sceneNumber}`;
 
     paragraphs.push({ type, text, sceneNumber });
   }

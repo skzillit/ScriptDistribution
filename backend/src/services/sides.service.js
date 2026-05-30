@@ -61,7 +61,8 @@ async function buildPdfSceneMap(pdfBuffer) {
     data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
 
-  const HEADING_RE = /\b(INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+/i;
+  // Standard slugs (INT./EXT./I/E) OR bare "SCENE 33" style headings.
+  const HEADING_RE = /\b(?:INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+|\bSCENE\b/i;
   const SCENE_NUM_RE = /^(\d+[A-Za-z]{0,3})\.?$/;   // pure scene-number token
   const scenes = [];
   const totalPages = pdf.numPages;
@@ -149,7 +150,7 @@ async function buildPdfSceneMap(pdfBuffer) {
       // Fallback: text-level leading (only if leading is BEFORE any INT./EXT. and is followed
       // by whitespace, meaning it's clearly a scene number not part of the heading text)
       if (!num) {
-        const leadingMatch = line.text.match(/^(\d+[A-Za-z]{0,3})\s+(INT|EXT|INT\/EXT|I\/E)/i);
+        const leadingMatch = line.text.match(/^(\d+[A-Za-z]{0,3})\s+(?:INT|EXT|INT\/EXT|I\/E|SCENE)/i);
         if (leadingMatch) num = leadingMatch[1];
       }
 
@@ -383,6 +384,151 @@ async function renderSceneImages(pdfBuffer, renderSpecs, options = {}) {
   await pdf.cleanup();
   await pdf.destroy();
   return result;
+}
+
+/**
+ * Render "cross out" sides. Visual spec (matches the client's sample):
+ *   - Render the FULL page (page number + margins kept), not a per-scene crop.
+ *   - Every UNSELECTED scene gets a light-grey shaded background.
+ *   - Each contiguous run of unselected scenes gets ONE big "X" drawn
+ *     corner-to-corner across the run.
+ *   - Selected scenes stay clean/white and fully readable.
+ *
+ * Pages rendered = every page touched by a selected scene (heading page → the
+ * page where the next scene begins); full pages in between are kept for
+ * continuity. Returns a SINGLE combined entry { sceneNumber, images } so the
+ * generateSidesPdf image path renders the pages in document order.
+ */
+async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumbers, totalPages, options = {}) {
+  const pdfjs = await loadPdfjs();
+  const { createCanvas } = require('@napi-rs/canvas');
+  const SCALE = 2;
+  const norm = (s) => String(s).toUpperCase().replace(/PT$/, '');
+  const requested = new Set(Array.from(requestedSceneNumbers).map(norm));
+
+  // Build full scene "blocks" (every scene, selected or not). Each block spans
+  // from its heading down to the next different scene's heading.
+  const blocks = [];
+  for (let i = 0; i < pdfSceneMap.length; i++) {
+    const s = pdfSceneMap[i];
+    if (!s.sceneNumber || s.sceneNumber === '__DAYBREAK__') continue;
+    let next = null;
+    for (let j = i + 1; j < pdfSceneMap.length; j++) {
+      if (pdfSceneMap[j].sceneNumber !== s.sceneNumber) { next = pdfSceneMap[j]; break; }
+    }
+    blocks.push({
+      sceneNumber: s.sceneNumber,
+      selected: requested.has(s.sceneNumber),
+      startPage: s.pageNumber,
+      startPdfY: s.pdfY,
+      startFontHeightPdf: s.fontHeightPdf || 12,
+      endPage: next ? next.pageNumber : totalPages,
+      endPdfY: next ? next.pdfY : null,
+      // Height of the NEXT scene's heading — needed so the grey/X stops just
+      // above that heading instead of swallowing it.
+      endFontHeightPdf: next ? (next.fontHeightPdf || 12) : 0,
+    });
+  }
+
+  const selectedBlocks = blocks.filter(b => b.selected);
+  if (!selectedBlocks.length) return [];
+
+  const startPage = Math.max(1, Math.min(...selectedBlocks.map(b => b.startPage)));
+  const endPage = Math.min(totalPages, Math.max(...selectedBlocks.map(b => b.endPage)));
+
+  const data = bufferToUint8(pdfBuffer);
+  const pdf = await pdfjs.getDocument({
+    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
+  }).promise;
+
+  const images = [];
+  for (let p = startPage; p <= endPage; p++) {
+    try {
+      const page = await pdf.getPage(p);
+      const viewport = page.getViewport({ scale: SCALE });
+      const W = viewport.width;
+      const H = viewport.height;
+
+      // Only keep a page that actually contains a SELECTED scene's content.
+      // (A page holding only unselected scenes — e.g. a gap between two far-apart
+      // picked scenes — is dropped entirely rather than shown fully crossed out.)
+      const MIN_SELECTED_PX = 24; // ~12pt of real content
+      let selectedHeightOnPage = 0;
+      for (const b of selectedBlocks) {
+        if (p < b.startPage || p > b.endPage) continue;
+        // Measure the selected block's full vertical extent on this page —
+        // from its heading down to the next scene's heading baseline.
+        let top = (p === b.startPage) ? (H - b.startPdfY * SCALE - b.startFontHeightPdf * SCALE) : 0;
+        let bottom = (p === b.endPage && b.endPdfY != null) ? (H - b.endPdfY * SCALE) : H;
+        top = Math.max(0, top);
+        bottom = Math.min(H, bottom);
+        if (bottom > top) selectedHeightOnPage += (bottom - top);
+      }
+      if (selectedHeightOnPage < MIN_SELECTED_PX) { page.cleanup(); continue; }
+
+      // Render the full page.
+      const canvas = createCanvas(W, H);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      await page.render({ canvasContext: ctx, viewport, background: 'white' }).promise;
+
+      // Vertical spans (canvas px) of unselected scenes on THIS page.
+      // The bottom of an unselected block is pushed WELL ABOVE the next
+      // (selected) scene's heading so the diagonal X and grey shading never
+      // touch the heading text.
+      const HEADING_CLEAR = 22; // canvas px of clearance above the next heading's TOP
+      const segs = [];
+      for (const b of blocks) {
+        if (b.selected) continue;
+        if (p < b.startPage || p > b.endPage) continue;
+        // Top: at the heading (this page) or the page top (continuation from a prior page).
+        let top = (p === b.startPage)
+          ? (H - b.startPdfY * SCALE - b.startFontHeightPdf * SCALE)
+          : 0;
+        // Bottom: stop a generous gap ABOVE the next heading's top so the X tips
+        // and grey rectangle don't reach the kept scene's heading.
+        let bottom = (p === b.endPage && b.endPdfY != null)
+          ? (H - b.endPdfY * SCALE - (b.endFontHeightPdf || 12) * SCALE - HEADING_CLEAR)
+          : H;
+        top = Math.max(0, top - 4);
+        bottom = Math.min(H, bottom);
+        if (bottom - top > 4) segs.push({ top, bottom });
+      }
+
+      // Merge adjacent/overlapping spans into contiguous crossed-out runs.
+      segs.sort((a, b) => a.top - b.top);
+      const runs = [];
+      for (const s of segs) {
+        const lastRun = runs[runs.length - 1];
+        if (lastRun && s.top <= lastRun.bottom + 6) lastRun.bottom = Math.max(lastRun.bottom, s.bottom);
+        else runs.push({ top: s.top, bottom: s.bottom });
+      }
+
+      // Grey shading + one big X per run.
+      for (const r of runs) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(178,178,178,0.45)';
+        ctx.fillRect(0, r.top, W, r.bottom - r.top);
+        ctx.strokeStyle = 'rgba(0,0,0,0.88)';
+        ctx.lineWidth = 1.6 * SCALE;
+        ctx.beginPath();
+        ctx.moveTo(0, r.top); ctx.lineTo(W, r.bottom);
+        ctx.moveTo(W, r.top); ctx.lineTo(0, r.bottom);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      images.push(canvas.toBuffer('image/png'));
+      page.cleanup();
+    } catch (err) {
+      console.error(`renderCrossoutImages: failed page ${p}:`, err.message);
+    }
+  }
+
+  await pdf.cleanup();
+  await pdf.destroy();
+  return [{ sceneNumber: selectedBlocks[0].sceneNumber, images }];
 }
 
 /**
@@ -817,7 +963,25 @@ async function extractSides(sidesId, versionId, sceneNumbers, options = {}) {
         console.log(`  p${s.pageNumber} scene=${s.sceneNumber} heading="${s.heading.slice(0, 80)}"`);
       }
 
-      if (renderSpecs.length > 0) {
+      // "Cross out" mode: keep full pages and strike through unselected scenes.
+      if (sides.sceneDisplayMode === 'crossout') {
+        const crossImages = await renderCrossoutImages(originalPdfBuffer, pdfSceneMap, requestedScenes, pdfTotalPages);
+        if (crossImages.length && crossImages[0].images.length) {
+          const key = '__crossout__';
+          sides._sceneImages = [{ key, sceneNumber: '__crossout__', images: crossImages[0].images }];
+          sides.scenes = [{
+            sceneNumber: [...requestedScenes].join(', '),
+            heading: `Scenes ${[...requestedScenes].join(', ')}`,
+            rawText: '',
+            imageKey: key,
+          }];
+          sides.totalScenes = 1;
+          sides.sceneNumbers = [...requestedScenes];
+          imageRenderingSucceeded = true;
+        } else {
+          console.warn('[sides] crossout produced no pages for this PDF');
+        }
+      } else if (renderSpecs.length > 0) {
         const sceneImages = await renderSceneImages(originalPdfBuffer, renderSpecs);
         sides._sceneImages = sceneImages;
 
@@ -929,15 +1093,9 @@ function generateSidesPdf(sides) {
     doc.on('end', () => resolve({ buffer: Buffer.concat(chunks), scheduleStartPage }));
     doc.on('error', reject);
 
-    // No title page — sides content starts directly on page 1 (auto-created)
-    doc.font('Courier-Bold').fontSize(9).fillColor('#999999');
-    doc.text('SIDES', 60, 30);
-    doc.text(sides.title, 200, 30, { align: 'right', width: 340 });
-    doc.fillColor('#000000');
-    doc.moveTo(60, 45).lineTo(552, 45).stroke('#CCCCCC');
-
-    doc.font('Courier').fontSize(12);
-    let y = 55;
+    // No title / page header — sides content starts directly at the top.
+    doc.font('Courier').fontSize(12).fillColor('#000000');
+    let y = 50;
 
     // Use same detection logic as HTML formatScreenplay
     function clean(s) { return s.replace(/\*+$/, '').trim(); }
@@ -971,24 +1129,23 @@ function generateSidesPdf(sides) {
     const TARGET_W = 492;
     let prevType = '';
 
-    for (const scene of sides.scenes) {
+    const normSceneNo = (s) => String(s == null ? '' : s).trim().toUpperCase().replace(/PT$/, '');
+
+    // Start a fresh page (no running header / title).
+    function contBanner() {
+      doc.addPage();
+      doc.fillColor('#000000');
+      y = 50;
+    }
+
+    // Render one script scene (image path with text fallback). Mutates `y`.
+    function renderSceneUnit(scene) {
       const lookupKey = scene.imageKey || scene.sceneNumber;
       const sceneImages = imagesByKey[lookupKey];
-
-      // In multi-version sides, print which version this scene came from so the
-      // crew can tell a revised page apart from an older one.
-      if (scene.sourceVersionLabel) {
-        if (y > PAGE_BOTTOM - 30) { doc.addPage(); y = 55; }
-        doc.font('Courier-Bold').fontSize(9).fillColor('#1565C0');
-        doc.text(`${scene.sourceVersionLabel} — Scene ${scene.sceneNumber}`, 60, y, { width: 492 });
-        doc.fillColor('#000000').font('Courier').fontSize(12);
-        y += 14;
-      }
 
       if (sceneImages && sceneImages.length > 0) {
         // ─── IMAGE PATH: embed cropped page images ───
         for (const imgBuffer of sceneImages) {
-          // openImage gives us natural width/height
           let img;
           try {
             img = doc.openImage(imgBuffer);
@@ -997,19 +1154,9 @@ function generateSidesPdf(sides) {
             continue;
           }
           const targetH = (img.height / img.width) * TARGET_W;
-          // If image is taller than a single page, scale down to fit one page max
           const remaining = PAGE_BOTTOM - y;
           if (targetH > PAGE_BOTTOM - 55) {
-            // Fits on its own page — start a fresh page
-            if (y > 55) {
-              doc.addPage();
-              doc.font('Courier-Bold').fontSize(9).fillColor('#999999');
-              doc.text('SIDES (cont.)', 60, 30);
-              doc.fillColor('#000000');
-              doc.moveTo(60, 45).lineTo(552, 45).stroke('#CCCCCC');
-              y = 55;
-            }
-            // Scale to fit page height
+            if (y > 55) contBanner();
             const maxH = PAGE_BOTTOM - 55;
             const scaledH = Math.min(targetH, maxH);
             const scaledW = (img.width / img.height) * scaledH;
@@ -1017,31 +1164,18 @@ function generateSidesPdf(sides) {
             doc.image(imgBuffer, xCentered, y, { width: scaledW, height: scaledH });
             y += scaledH + 8;
           } else {
-            if (targetH > remaining) {
-              doc.addPage();
-              doc.font('Courier-Bold').fontSize(9).fillColor('#999999');
-              doc.text('SIDES (cont.)', 60, 30);
-              doc.fillColor('#000000');
-              doc.moveTo(60, 45).lineTo(552, 45).stroke('#CCCCCC');
-              y = 55;
-            }
+            if (targetH > remaining) contBanner();
             doc.image(imgBuffer, 60, y, { width: TARGET_W });
             y += targetH + 8;
           }
         }
       } else {
         // ─── FALLBACK TEXT PATH: original line-by-line text rendering ───
-        const lines = scene.rawText.split('\n');
+        doc.font('Courier').fontSize(12);
+        prevType = '';
+        const lines = (scene.rawText || '').split('\n');
         for (const line of lines) {
-          if (y > 720) {
-            doc.addPage();
-            doc.font('Courier-Bold').fontSize(9).fillColor('#999999');
-            doc.text('SIDES (cont.)', 60, 30);
-            doc.fillColor('#000000');
-            doc.moveTo(60, 45).lineTo(552, 45).stroke('#CCCCCC');
-            doc.font('Courier').fontSize(12);
-            y = 55;
-          }
+          if (y > 720) { contBanner(); doc.font('Courier').fontSize(12); }
           const trimmed = line.trim();
           if (!trimmed) { y += 10; prevType = ''; continue; }
 
@@ -1074,61 +1208,61 @@ function generateSidesPdf(sides) {
           }
         }
       }
-
-      // Separator line between scenes
-      y += 8;
-      if (y > PAGE_BOTTOM) {
-        doc.addPage();
-        y = 55;
-      }
-      doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
-      y += 16;
     }
 
-    // ─── Scene folders ("Pages") section ───
-    // Each pulled-in ScenePage contributes its uploaded PDF pages under a
-    // colored, titled header (scene number) and optional description.
-    if (Array.isArray(sides._folderImages) && sides._folderImages.length) {
-      for (const folder of sides._folderImages) {
-        if (y > PAGE_BOTTOM - 60) { doc.addPage(); y = 55; }
-        // Color swatch + title
-        const sw = 12;
-        const safeColor = /^#[0-9a-fA-F]{3,8}$/.test(folder.color || '') ? folder.color : '#9e9e9e';
-        doc.save();
-        doc.rect(60, y, sw, sw).fill(safeColor);
-        doc.restore();
-        doc.fillColor('#000000').font('Courier-Bold').fontSize(13);
-        doc.text(`Scene ${folder.label}`, 60 + sw + 8, y, { width: 492 - sw - 8 });
-        y += 18;
-        if (folder.description) {
-          doc.font('Courier').fontSize(10).fillColor('#555555');
-          doc.text(folder.description, 60, y, { width: 492 });
-          y += doc.heightOfString(folder.description, { width: 492 }) + 4;
-          doc.fillColor('#000000');
+    // Render one pulled-in scene folder ("Page") — page images only, no header.
+    function renderFolderUnit(folder) {
+      if (y > PAGE_BOTTOM - 60) { doc.addPage(); y = 50; }
+      for (const imgBuffer of (folder.images || [])) {
+        let img;
+        try { img = doc.openImage(imgBuffer); } catch (e) { continue; }
+        const targetH = (img.height / img.width) * TARGET_W;
+        const maxH = PAGE_BOTTOM - 55;
+        if (targetH > (PAGE_BOTTOM - y)) { doc.addPage(); y = 55; }
+        if (targetH > maxH) {
+          const scaledH = maxH;
+          const scaledW = (img.width / img.height) * scaledH;
+          const xCentered = 60 + (TARGET_W - scaledW) / 2;
+          doc.image(imgBuffer, xCentered, y, { width: scaledW, height: scaledH });
+          y += scaledH + 8;
+        } else {
+          doc.image(imgBuffer, 60, y, { width: TARGET_W });
+          y += targetH + 8;
         }
-        // Page images
-        for (const imgBuffer of (folder.images || [])) {
-          let img;
-          try { img = doc.openImage(imgBuffer); } catch (e) { continue; }
-          const targetH = (img.height / img.width) * TARGET_W;
-          const maxH = PAGE_BOTTOM - 55;
-          if (targetH > (PAGE_BOTTOM - y)) { doc.addPage(); y = 55; }
-          if (targetH > maxH) {
-            const scaledH = maxH;
-            const scaledW = (img.width / img.height) * scaledH;
-            const xCentered = 60 + (TARGET_W - scaledW) / 2;
-            doc.image(imgBuffer, xCentered, y, { width: scaledW, height: scaledH });
-            y += scaledH + 8;
-          } else {
-            doc.image(imgBuffer, 60, y, { width: TARGET_W });
-            y += targetH + 8;
-          }
-        }
-        y += 4;
-        if (y > PAGE_BOTTOM) { doc.addPage(); y = 55; }
-        doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
-        y += 16;
       }
+      y += 4;
+    }
+
+    // ─── Combined render: script scenes + page folders in ONE ordered list ───
+    // Script scenes and pulled-in "Pages" are interleaved per the user's
+    // rearrange order (sides.sceneOrder). Without an order, script scenes come
+    // first (script order), then the page folders (selection order).
+    let units = [
+      ...sides.scenes.map(s => ({ kind: 'scene', sceneNumber: normSceneNo(s.sceneNumber), data: s })),
+      ...(Array.isArray(sides._folderImages)
+        ? sides._folderImages.map(f => ({ kind: 'folder', sceneNumber: normSceneNo(f.label), data: f }))
+        : []),
+    ];
+
+    if (Array.isArray(sides.sceneOrder) && sides.sceneOrder.length) {
+      const rank = new Map();
+      sides.sceneOrder.forEach((sn, i) => { const k = normSceneNo(sn); if (!rank.has(k)) rank.set(k, i); });
+      const rankOf = (sn) => (rank.has(sn) ? rank.get(sn) : Number.MAX_SAFE_INTEGER);
+      units = units
+        .map((u, i) => ({ u, i }))
+        .sort((a, b) => (rankOf(a.u.sceneNumber) - rankOf(b.u.sceneNumber)) || (a.i - b.i))
+        .map(x => x.u);
+    }
+
+    for (const unit of units) {
+      if (unit.kind === 'scene') renderSceneUnit(unit.data);
+      else renderFolderUnit(unit.data);
+
+      // Separator line between units
+      y += 8;
+      if (y > PAGE_BOTTOM) { doc.addPage(); y = 55; }
+      doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
+      y += 16;
     }
 
     // Mark where schedule section starts (1-based page number within the sides PDF).
@@ -1507,6 +1641,22 @@ async function attachFolderImages(sides) {
         const totalPages = probe.numPages;
         await probe.destroy();
 
+        // Cross-out mode: keep the page PDF's full pages and strike through the
+        // scenes the user did NOT pick (same visual as the script cross-out).
+        if (sides.sceneDisplayMode === 'crossout') {
+          const crossImages = await renderCrossoutImages(buf, sceneMap, new Set(wanted.map(normalize)), totalPages);
+          if (crossImages.length && crossImages[0].images.length) {
+            out.push({
+              label: wanted.join(', '),
+              color: folder.color,
+              description: folder.description,
+              images: crossImages[0].images,
+            });
+            continue;
+          }
+          // Fall through to crop/whole-PDF if cross-out produced nothing.
+        }
+
         const specs = buildRenderSpecs(sceneMap, new Set(wanted.map(normalize)), totalPages);
         if (specs.length > 0) {
           const sceneImages = await renderSceneImages(buf, specs);
@@ -1587,6 +1737,27 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
       }).promise;
       const totalPages = probeDoc.numPages;
       await probeDoc.destroy();
+
+      // "Cross out" mode: keep the full contiguous page run and strike through
+      // the unselected scenes (one combined entry per version group).
+      if (sides.sceneDisplayMode === 'crossout') {
+        const crossImages = await renderCrossoutImages(pdfBuffer, pdfSceneMap, requested, totalPages);
+        if (!crossImages.length || !crossImages[0].images.length) {
+          console.warn(`[sides:multi] crossout produced no pages for version ${label}`);
+          continue;
+        }
+        const key = `${gi}:__crossout__`;
+        allScenes.push({
+          sceneNumber: [...requested].join(', '),
+          heading: `Scenes ${[...requested].join(', ')} (${label})`,
+          rawText: '',
+          sourceVersion: group.versionId,
+          sourceVersionLabel: label,
+          imageKey: key,
+        });
+        allSceneImages.push({ key, sceneNumber: '__crossout__', images: crossImages[0].images });
+        continue;
+      }
 
       const renderSpecs = buildRenderSpecs(pdfSceneMap, requested, totalPages);
       if (renderSpecs.length === 0) {

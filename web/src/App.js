@@ -3,9 +3,10 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Header from './components/common/Header';
 import Sidebar from './components/common/Sidebar';
-import DashboardPage from './pages/DashboardPage';
+import ScriptsManagerPage from './pages/ScriptsManagerPage';
 import ScriptDetailPage from './pages/ScriptDetailPage';
 import SidesPage from './pages/SidesPage';
+import GenerateSidesPage from './pages/GenerateSidesPage';
 import CallSheetPage from './pages/CallSheetPage';
 import SchedulePageNew from './pages/SchedulePageNew';
 
@@ -32,9 +33,10 @@ function App() {
             {(role === 'admin' || role === 'editor') && (
               <>
                 <Route path="/callsheet" element={<CallSheetPage />} />
-                <Route path="/script" element={<DashboardPage />} />
+                <Route path="/script" element={<ScriptsManagerPage />} />
                 <Route path="/scripts/:id" element={<ScriptDetailPage />} />
                 <Route path="/schedule" element={<SchedulePageNew />} />
+                <Route path="/sides/generate" element={<GenerateSidesPage />} />
               </>
             )}
             <Route path="/sides" element={<SidesPage />} />

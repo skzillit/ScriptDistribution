@@ -6,16 +6,14 @@ import { getApiBaseUrl } from '../api/client';
 import { onEvent } from '../api/socket';
 import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
-import GenerateSidesModal from '../components/sides/GenerateSidesModal';
 import AutogenerateSidesModal from '../components/sides/AutogenerateSidesModal';
 import { useAuth } from '../context/AuthContext';
 
 function SidesPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const isEditor = user?.role === 'admin' || user?.role === 'editor';
-  const [showGenerateSides, setShowGenerateSides] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [autogen, setAutogen] = useState(null); // { scriptId, callSheetId, scheduleId } | null
 
@@ -56,7 +54,7 @@ function SidesPage() {
     if (!hasScript && !hasHistory) {
       return toast.error('No active script or pages found. Please upload script to pages to generate sides');
     }
-    setShowGenerateSides(true);
+    navigate('/sides/generate');
   };
 
   const { data, isLoading } = useQuery({
@@ -105,10 +103,6 @@ function SidesPage() {
             <button className="btn-secondary" onClick={handleGenerateSides} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
               Generate Sides
-            </button>
-            <button className="btn-secondary" onClick={() => navigate('/script')} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-              Add Script/Pages
             </button>
           </div>
         )}
@@ -174,12 +168,6 @@ function SidesPage() {
           </div>
         ) : <div style={{ color: 'var(--text-muted)', fontSize: '12px', padding: '12px', textAlign: 'center' }}>No history</div>)}
       </div>
-
-      {showGenerateSides && (
-        <GenerateSidesModal
-          onClose={() => setShowGenerateSides(false)}
-          onSuccess={() => { setShowGenerateSides(false); queryClient.invalidateQueries({ queryKey: ['sides'] }); }} />
-      )}
 
       {autogen && (
         <AutogenerateSidesModal

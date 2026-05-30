@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { scriptsApi, callSheetApi, sidesApi, scheduleApi, scenePagesApi } from '../../api/scripts.api';
+import { getApiBaseUrl } from '../../api/client';
 import { toast } from 'react-toastify';
 
 /**
@@ -8,7 +9,7 @@ import { toast } from 'react-toastify';
  * (only when expanded) and lets the user toggle individual scenes. Selection is
  * lifted to the parent via callbacks so it survives collapse/expand.
  */
-function VersionScenePicker({ version, isCurrent, picked, onToggleScene, onSelectAll, onClear }) {
+function VersionScenePicker({ version, isCurrent, picked, claimed, onToggleScene, onSelectAll, onClear }) {
   const [open, setOpen] = useState(isCurrent);
   const { data, isLoading } = useQuery({
     queryKey: ['version-scenes', version._id],
@@ -46,14 +47,19 @@ function VersionScenePicker({ version, isCurrent, picked, onToggleScene, onSelec
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                 {scenes.map((s, i) => {
                   const on = pickedSet.has(s.sceneNumber);
+                  const blocked = !on && claimed && claimed.has(String(s.sceneNumber));
                   return (
-                    <button key={i} type="button" title={s.heading || ''} onClick={() => onToggleScene(s.sceneNumber)}
+                    <button key={i} type="button" disabled={blocked}
+                      title={blocked ? 'Already picked from another source' : (s.heading || '')}
+                      onClick={() => onToggleScene(s.sceneNumber)}
                       style={{
-                        padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+                        padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
+                        cursor: blocked ? 'not-allowed' : 'pointer',
                         border: '1px solid', transition: 'all .12s',
                         background: on ? 'var(--accent)' : 'var(--bg-card)',
                         color: on ? 'white' : 'var(--text-secondary)',
                         borderColor: on ? 'var(--accent)' : 'var(--border)',
+                        opacity: blocked ? 0.35 : 1,
                       }}>
                       {s.sceneNumber}
                     </button>
@@ -73,7 +79,7 @@ function VersionScenePicker({ version, isCurrent, picked, onToggleScene, onSelec
  * each version expandable into its scene picker. Versions are fetched per script
  * so historical scripts' data isn't loaded until shown.
  */
-function ScriptVersionsGroup({ script, isActive, activeVersionId, versionPicks, onToggleScene, onSetScenes }) {
+function ScriptVersionsGroup({ script, isActive, activeVersionId, versionPicks, claimed, onToggleScene, onSetScenes }) {
   const { data, isLoading } = useQuery({
     queryKey: ['script-versions', script._id],
     queryFn: () => scriptsApi.listVersions(script._id).then(r => r.data),
@@ -84,11 +90,7 @@ function ScriptVersionsGroup({ script, isActive, activeVersionId, versionPicks, 
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
         <span style={{ fontSize: '12px', fontWeight: '800', color: 'var(--text-primary)' }}>{script.title}</span>
-        <span style={{ fontSize: '9px', fontWeight: '700', padding: '1px 6px', borderRadius: '4px',
-          color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-          background: isActive ? 'var(--accent-glow)' : 'var(--bg-card)' }}>
-          {isActive ? 'ACTIVE' : 'HISTORY'}
-        </span>
+        {isActive && <span style={{ fontSize: '9px', fontWeight: '700', padding: '1px 6px', borderRadius: '4px', color: 'var(--accent)', background: 'var(--accent-glow)' }}>ACTIVE</span>}
       </div>
       {isLoading ? (
         <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '4px 0 4px 8px' }}>Loading versions…</div>
@@ -102,6 +104,7 @@ function ScriptVersionsGroup({ script, isActive, activeVersionId, versionPicks, 
               version={v}
               isCurrent={isActive && String(v._id) === String(activeVersionId)}
               picked={versionPicks[v._id] || []}
+              claimed={claimed}
               onToggleScene={(sn) => onToggleScene(v._id, sn)}
               onSelectAll={(all) => onSetScenes(v._id, all)}
               onClear={() => onSetScenes(v._id, [])}
@@ -118,7 +121,7 @@ function ScriptVersionsGroup({ script, isActive, activeVersionId, versionPicks, 
  * page's PDF and lets the user toggle individual scenes — exactly like a script
  * version. If no scenes are detected, offers an "include whole PDF" checkbox.
  */
-function FolderScenePicker({ folder, picked, whole, onToggleScene, onSelectAll, onClear, onToggleWhole }) {
+function FolderScenePicker({ folder, picked, whole, claimed, onToggleScene, onSelectAll, onClear, onToggleWhole }) {
   const [open, setOpen] = useState(false);
   const { data, isLoading } = useQuery({
     queryKey: ['scene-page-scenes', folder._id],
@@ -160,14 +163,19 @@ function FolderScenePicker({ folder, picked, whole, onToggleScene, onSelectAll, 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                 {scenes.map((s, i) => {
                   const on = pickedSet.has(s.sceneNumber);
+                  const blocked = !on && claimed && claimed.has(String(s.sceneNumber));
                   return (
-                    <button key={i} type="button" title={s.heading || ''} onClick={() => onToggleScene(s.sceneNumber)}
+                    <button key={i} type="button" disabled={blocked}
+                      title={blocked ? 'Already picked from another source' : (s.heading || '')}
+                      onClick={() => onToggleScene(s.sceneNumber)}
                       style={{
-                        padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+                        padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
+                        cursor: blocked ? 'not-allowed' : 'pointer',
                         border: '1px solid', transition: 'all .12s',
                         background: on ? 'var(--accent)' : 'var(--bg-card)',
                         color: on ? 'white' : 'var(--text-secondary)',
                         borderColor: on ? 'var(--accent)' : 'var(--border)',
+                        opacity: blocked ? 0.35 : 1,
                       }}>
                       {s.sceneNumber}
                     </button>
@@ -186,7 +194,7 @@ function FolderScenePicker({ folder, picked, whole, onToggleScene, onSelectAll, 
  * Lists the scene folders (Pages) of one script (active or historical) as a
  * labelled group, each Page expandable into its detected scenes. Fetched per script.
  */
-function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, onToggleScene, onSetScenes, onToggleWhole }) {
+function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, claimed, onToggleScene, onSetScenes, onToggleWhole }) {
   const { data } = useQuery({
     queryKey: ['scene-pages', script._id],
     queryFn: () => scenePagesApi.list(script._id).then(r => r.data),
@@ -198,11 +206,7 @@ function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, 
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
         <span style={{ fontSize: '12px', fontWeight: '800', color: 'var(--text-primary)' }}>{script.title}</span>
-        <span style={{ fontSize: '9px', fontWeight: '700', padding: '1px 6px', borderRadius: '4px',
-          color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-          background: isActive ? 'var(--accent-glow)' : 'var(--bg-card)' }}>
-          {isActive ? 'ACTIVE' : 'HISTORY'}
-        </span>
+        {isActive && <span style={{ fontSize: '9px', fontWeight: '700', padding: '1px 6px', borderRadius: '4px', color: 'var(--accent)', background: 'var(--accent-glow)' }}>ACTIVE</span>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingLeft: '8px' }}>
         {folders.map(f => (
@@ -211,6 +215,7 @@ function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, 
             folder={f}
             picked={folderScenePicks[f._id] || []}
             whole={wholeFolders.has(f._id)}
+            claimed={claimed}
             onToggleScene={(sn) => onToggleScene(f._id, sn)}
             onSelectAll={(all) => onSetScenes(f._id, all)}
             onClear={() => onSetScenes(f._id, [])}
@@ -222,7 +227,7 @@ function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, 
   );
 }
 
-function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
+function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet, asPage }) {
   const [selectedCallSheet, setSelectedCallSheet] = useState(preSelectedCallSheet || '');
   const [selectedSchedule, setSelectedSchedule] = useState('');
   const [callSheetPages, setCallSheetPages] = useState('all');
@@ -238,7 +243,14 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   // Rearrange order: when on, sides are generated in the exact order typed below.
   const [rearrange, setRearrange] = useState(false);
   const [orderInput, setOrderInput] = useState('');
+  // How to treat scenes NOT selected: 'hide' (drop them — current behavior) or
+  // 'crossout' (keep the full pages but strike through the unselected scenes).
+  const [sceneDisplayMode, setSceneDisplayMode] = useState('hide');
   const [generating, setGenerating] = useState(false);
+  // Review stage: generated draft (unpublished), whether viewed, publish/move busy flag.
+  const [generated, setGenerated] = useState(null);
+  const [viewed, setViewed] = useState(false);
+  const [working, setWorking] = useState(false);
   // Customize Sides always lets you pick scenes from all scripts/versions.
   const multiMode = true;
   // Map of versionId -> array of picked scene numbers.
@@ -247,6 +259,8 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   // folderScenePicks: { [pageId]: [sceneNumbers] }; wholeFolders: pages included as full PDF.
   const [folderScenePicks, setFolderScenePicks] = useState({});
   const [wholeFolders, setWholeFolders] = useState(new Set());
+  // Only one script at a time drives a sides booklet.
+  const [selectedScriptId, setSelectedScriptId] = useState('');
 
   // Get active script (auto-selected, no manual choice needed)
   const { data: activeData } = useQuery({
@@ -286,33 +300,74 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     enabled: !!selectedSchedule,
   });
 
-  // Archived (historical) scripts — so users can pull scenes/pages from older
-  // scripts too, not just the active one.
-  const { data: historyData } = useQuery({
-    queryKey: ['scripts-history'],
-    queryFn: () => scriptsApi.getHistory({ limit: 100 }).then(r => r.data),
-    enabled: !!activeScript,
+  // All of the user's scripts — every script (and its pages) can feed sides.
+  const { data: scriptsListData } = useQuery({
+    queryKey: ['scripts'],
+    queryFn: () => scriptsApi.list({ limit: 100 }).then(r => r.data),
   });
-  const historyScripts = historyData?.scripts || [];
+  const allScripts = scriptsListData?.scripts || [];
 
-  // Scripts offered in the pickers: active first, then history.
-  const scriptsToShow = useMemo(() => {
-    const list = [];
-    if (activeScript) list.push({ script: activeScript, isActive: true });
-    for (const s of historyScripts) list.push({ script: s, isActive: false });
-    return list;
-  }, [activeScript, historyScripts]);
+  // Default the selected script to the active one (or the first available).
+  useEffect(() => {
+    if (!selectedScriptId && allScripts.length) {
+      setSelectedScriptId(String(activeScript?._id || allScripts[0]._id));
+    }
+  }, [allScripts, activeScript, selectedScriptId]);
+
+  const selectedScript = allScripts.find(s => String(s._id) === String(selectedScriptId)) || null;
+  // Only the selected script's versions + pages are offered for scene picking.
+  const scriptsToShow = useMemo(
+    () => (selectedScript ? [{ script: selectedScript, isActive: String(selectedScript._id) === String(activeScript?._id) }] : []),
+    [selectedScript, activeScript]);
+  const primaryScriptId = selectedScriptId || activeScript?._id || allScripts[0]?._id;
+
+  // Switching scripts clears scene/page selections (they're keyed to the old script).
+  const changeScript = (id) => {
+    setSelectedScriptId(id);
+    setVersionPicks({});
+    setFolderScenePicks({});
+    setWholeFolders(new Set());
+    setRearrange(false);
+    setOrderInput('');
+  };
+
+  // Scenes claimed by ANY source the given key does NOT own — used to enforce
+  // "a scene number can be picked only once across all versions and pages".
+  const claimedExcept = (excludeKind, excludeKey) => {
+    const out = new Set();
+    for (const [vid, arr] of Object.entries(versionPicks)) {
+      if (excludeKind === 'version' && vid === excludeKey) continue;
+      (arr || []).forEach(s => out.add(String(s)));
+    }
+    for (const [pid, arr] of Object.entries(folderScenePicks)) {
+      if (excludeKind === 'folder' && pid === excludeKey) continue;
+      (arr || []).forEach(s => out.add(String(s)));
+    }
+    return out;
+  };
 
   // Per-page scene selection handlers.
   const toggleFolderScene = (pageId, sceneNumber) => {
+    const elsewhere = claimedExcept('folder', pageId);
+    const own = new Set(folderScenePicks[pageId] || []);
+    if (elsewhere.has(String(sceneNumber)) && !own.has(sceneNumber)) {
+      toast.info(`Scene ${sceneNumber} is already picked from another source.`);
+      return;
+    }
     setFolderScenePicks(prev => {
       const cur = new Set(prev[pageId] || []);
       if (cur.has(sceneNumber)) cur.delete(sceneNumber); else cur.add(sceneNumber);
       return { ...prev, [pageId]: [...cur] };
     });
   };
-  const setFolderScenes = (pageId, sceneNumbers) =>
-    setFolderScenePicks(prev => ({ ...prev, [pageId]: [...sceneNumbers] }));
+  const setFolderScenes = (pageId, sceneNumbers) => {
+    const elsewhere = claimedExcept('folder', pageId);
+    const filtered = sceneNumbers.filter(s => !elsewhere.has(String(s)));
+    if (filtered.length < sceneNumbers.length) {
+      toast.info(`Skipped scenes already picked from another source.`);
+    }
+    setFolderScenePicks(prev => ({ ...prev, [pageId]: [...filtered] }));
+  };
   const toggleWholeFolder = (pageId) => setWholeFolders(prev => {
     const n = new Set(prev); if (n.has(pageId)) n.delete(pageId); else n.add(pageId); return n;
   });
@@ -330,16 +385,29 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   }, [folderScenePicks, wholeFolders]);
   const pageSelCount = pageSelections.length;
 
-  // Toggle one scene for one version.
+  // Toggle one scene for one version. Blocks adding a scene number that's
+  // already picked from another version or a page folder.
   const toggleVersionScene = (versionId, sceneNumber) => {
+    const elsewhere = claimedExcept('version', versionId);
+    const own = new Set(versionPicks[versionId] || []);
+    if (elsewhere.has(String(sceneNumber)) && !own.has(sceneNumber)) {
+      toast.info(`Scene ${sceneNumber} is already picked from another source.`);
+      return;
+    }
     setVersionPicks(prev => {
       const cur = new Set(prev[versionId] || []);
       if (cur.has(sceneNumber)) cur.delete(sceneNumber); else cur.add(sceneNumber);
       return { ...prev, [versionId]: [...cur] };
     });
   };
-  const setVersionScenes = (versionId, sceneNumbers) =>
-    setVersionPicks(prev => ({ ...prev, [versionId]: [...sceneNumbers] }));
+  const setVersionScenes = (versionId, sceneNumbers) => {
+    const elsewhere = claimedExcept('version', versionId);
+    const filtered = sceneNumbers.filter(s => !elsewhere.has(String(s)));
+    if (filtered.length < sceneNumbers.length) {
+      toast.info(`Skipped scenes already picked from another source.`);
+    }
+    setVersionPicks(prev => ({ ...prev, [versionId]: [...filtered] }));
+  };
 
   // Payload + count for multi-version mode.
   const versionScenesPayload = useMemo(() =>
@@ -354,6 +422,9 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const pageSelectedScenes = useMemo(() => Object.values(folderScenePicks).flat(), [folderScenePicks]);
   // Everything the user has selected (versions + pages), de-duplicated, in pick order.
   const allSelectedScenes = useMemo(() => [...new Set([...multiSelectedScenes, ...pageSelectedScenes])], [multiSelectedScenes, pageSelectedScenes]);
+  // All scene numbers claimed across versions + page folders — used by the
+  // pickers to dim scenes already taken by another source.
+  const claimedScenes = useMemo(() => new Set(allSelectedScenes.map(String)), [allSelectedScenes]);
 
   // Keep the rearrange order field in sync with the current selection (scenes
   // from versions AND pages). Preserves any custom ordering the user typed;
@@ -461,14 +532,14 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
   const readyToSubmit = (multiMode ? multiSceneCount > 0 : finalSceneNumbers.length > 0) || pageSelCount > 0;
 
   const handleGenerate = async () => {
-    if (!activeScript) return toast.error('No active script found');
+    if (!primaryScriptId) return toast.error('No script found');
     if (!readyToSubmit) return toast.error('Select at least one scene or page');
 
     setGenerating(true);
     try {
       const includeCs = includeCallSheetPdf && !!selectedCallSheet;
       const payload = {
-        scriptId: activeScript._id,
+        scriptId: primaryScriptId,
         callSheetId: includeCs ? selectedCallSheet : undefined,
         title: title || undefined,
         mode: 'manual',
@@ -507,9 +578,28 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
         if (rearrange) payload.orderedScenes = true;
       }
 
+      // Combined render order across BOTH script scenes and page scenes.
+      if (rearrange && orderInput.trim()) {
+        payload.orderedScenes = true;
+        payload.sceneOrder = orderedSceneList;
+      }
+
+      payload.sceneDisplayMode = sceneDisplayMode;
+
+      // Generate as a review draft (publish:false) — not posted to the Sides
+      // module until the user reviews and publishes.
+      payload.publish = false;
       const { data } = await sidesApi.generate(payload);
-      toast.success('Sides generation started!');
-      onSuccess(data.sides);
+      const sidesId = data.sides._id;
+      setGenerated(data.sides);
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const res = await sidesApi.get(sidesId);
+          setGenerated(res.data.sides);
+          if (res.data.sides.status === 'ready' || res.data.sides.status === 'error') break;
+        } catch (_) { /* keep polling */ }
+      }
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to generate sides');
     } finally {
@@ -517,19 +607,67 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
     }
   };
 
+  const handlePublish = async () => {
+    if (!generated) return;
+    setWorking(true);
+    try {
+      await sidesApi.publish(generated._id);
+      toast.success('Published to Sides');
+      onSuccess(generated);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Publish failed');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleMoveToDoc = async () => {
+    if (!generated) return;
+    setWorking(true);
+    try {
+      await sidesApi.moveToDocDistribution(generated._id);
+      toast.success('Moved to Doc Distribution');
+      onClose();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Move failed');
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const L = { fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px', fontWeight: '600', letterSpacing: '0.5px', textTransform: 'uppercase' };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
-      <div className="card" style={{ width: '620px', maxHeight: '92vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)' }} onClick={e => e.stopPropagation()}>
+    <div
+      style={asPage
+        ? { padding: '8px 0 40px' }
+        : { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+      onClick={asPage ? undefined : onClose}>
+      <div className="card"
+        style={asPage
+          ? { width: '100%', maxWidth: '760px', margin: '0 auto', boxShadow: 'var(--shadow-lg)' }
+          : { width: '620px', maxHeight: '92vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)' }}
+        onClick={e => e.stopPropagation()}>
         <h2 style={{ marginBottom: '20px', fontSize: '22px', fontWeight: '800', background: 'var(--gradient-accent)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Generate Sides</h2>
 
-        {/* Multi-version / multi-script picker — versions grouped by script (active + history) */}
+        {!generated && (<>
+        {/* Script selector — one script at a time drives the sides */}
+        <div style={{ marginBottom: '14px' }}>
+          <label style={L}>Script</label>
+          <select value={selectedScriptId} onChange={e => changeScript(e.target.value)} style={{ width: '100%' }}>
+            {allScripts.length === 0 && <option value="">No scripts available</option>}
+            {allScripts.map(s => (
+              <option key={s._id} value={s._id}>{s.title}{s.currentVersion ? '' : ' (no file — pages only)'}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Scene picker for the selected script's versions */}
         {multiMode && (
           <div style={{ marginBottom: '12px' }}>
-            <label style={L}>Pick scenes per script & version</label>
+            <label style={L}>Pick scenes (versions)</label>
             {scriptsToShow.length === 0 ? (
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Loading scripts…</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Select a script above.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {scriptsToShow.map(({ script, isActive }) => (
@@ -539,6 +677,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
                     isActive={isActive}
                     activeVersionId={activeVersionId}
                     versionPicks={versionPicks}
+                    claimed={claimedScenes}
                     onToggleScene={toggleVersionScene}
                     onSetScenes={setVersionScenes}
                   />
@@ -586,6 +725,7 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
                   isActive={isActive}
                   folderScenePicks={folderScenePicks}
                   wholeFolders={wholeFolders}
+                  claimed={claimedScenes}
                   onToggleScene={toggleFolderScene}
                   onSetScenes={setFolderScenes}
                   onToggleWhole={toggleWholeFolder}
@@ -615,8 +755,10 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           </div>
         )}
 
-        {/* Scene order (multi-version) */}
-        {multiMode && allSelectedScenes.length > 0 && (
+        {/* Scene order — only meaningful when scenes are HIDDEN (not crossed out).
+            In cross-out mode pages render in natural document order, so the
+            rearrange field would have no effect; we hide it to avoid confusion. */}
+        {multiMode && allSelectedScenes.length > 0 && sceneDisplayMode === 'hide' && (
           <div style={{ marginBottom: '12px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: rearrange ? '8px' : 0 }}>
               <input type="checkbox" checked={rearrange} onChange={e => enableRearrange(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
@@ -634,40 +776,31 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
           </div>
         )}
 
-        {/* Call sheet (optional) */}
-        <div style={{ marginBottom: '12px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: includeCallSheetPdf ? '8px' : 0 }}>
-            <input type="checkbox" checked={includeCallSheetPdf} onChange={e => setIncludeCallSheetPdf(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-            Include call sheet in sides
-          </label>
-          {includeCallSheetPdf && (
-            <select value={selectedCallSheet} onChange={e => setSelectedCallSheet(e.target.value)} style={{ width: '100%' }}>
-              {(callSheetsData?.callSheets || []).length === 0
-                ? <option value="">No published call sheet</option>
-                : <option value="">Select a call sheet…</option>}
-              {(callSheetsData?.callSheets || []).map(cs => (
-                <option key={cs._id} value={cs._id}>{cs.title} ({cs.scenes?.length || 0} scenes)</option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        {/* Schedule (optional) */}
-        <div style={{ marginBottom: '12px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: includeSchedule ? '8px' : 0 }}>
-            <input type="checkbox" checked={includeSchedule} onChange={e => setIncludeSchedule(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
-            Include schedule in sides
-          </label>
-          {includeSchedule && (
-            <select value={selectedSchedule} onChange={e => setSelectedSchedule(e.target.value)} style={{ width: '100%' }}>
-              {(schedulesData?.schedules || []).length === 0
-                ? <option value="">No published schedule</option>
-                : <option value="">Select a schedule…</option>}
-              {(schedulesData?.schedules || []).map(s => (
-                <option key={s._id} value={s._id}>{s.title} ({s.totalDays || 0} days)</option>
-              ))}
-            </select>
-          )}
+        {/* Unselected-scene handling */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={L}>Unselected scenes</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {[
+              { val: 'hide', title: 'Hide unselected scenes', desc: 'Only the selected scenes appear (current behavior).' },
+              { val: 'crossout', title: 'Cross out unselected scenes', desc: 'Keep full pages; strike through scenes not selected.' },
+            ].map(opt => (
+              <label key={opt.val}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer',
+                  border: `1px solid ${sceneDisplayMode === opt.val ? 'var(--accent)' : 'var(--border)'}`,
+                  background: sceneDisplayMode === opt.val ? 'var(--accent-glow)' : 'transparent' }}>
+                <span onClick={() => setSceneDisplayMode(opt.val)}
+                  style={{ width: '16px', height: '16px', borderRadius: '50%', marginTop: '2px', flexShrink: 0,
+                    border: `2px solid ${sceneDisplayMode === opt.val ? 'var(--accent)' : 'var(--text-muted)'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {sceneDisplayMode === opt.val && <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent)' }} />}
+                </span>
+                <span onClick={() => setSceneDisplayMode(opt.val)} style={{ flex: 1 }}>
+                  <span style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>{opt.title}</span>
+                  <span style={{ display: 'block', fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{opt.desc}</span>
+                </span>
+              </label>
+            ))}
+          </div>
         </div>
 
         {/* Title */}
@@ -679,11 +812,61 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet }) {
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
           <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn-primary" onClick={handleGenerate}
-            disabled={generating || !activeScript || !readyToSubmit}
-            style={{ opacity: (generating || !activeScript || !readyToSubmit) ? 0.5 : 1 }}>
+            disabled={generating || !primaryScriptId || !readyToSubmit}
+            style={{ opacity: (generating || !primaryScriptId || !readyToSubmit) ? 0.5 : 1 }}>
             {generating ? 'Submitting...' : 'Submit'}
           </button>
         </div>
+        </>)}
+
+        {/* ── Review stage ── */}
+        {generated && (
+          <div>
+            {generated.status === 'error' ? (
+              <div style={{ padding: '12px 0' }}>
+                <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--error, #e53935)', marginBottom: '6px' }}>Generation failed</div>
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{generated.error || 'Something went wrong while generating sides.'}</div>
+              </div>
+            ) : generated.status !== 'ready' ? (
+              <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                <div style={{ fontSize: '14px', fontWeight: '600' }}>Generating sides…</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>This usually takes under a minute.</div>
+              </div>
+            ) : (
+              <div style={{ padding: '8px 0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '14px', borderRadius: '10px', background: 'var(--accent-glow)', border: '1px solid var(--border)', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '22px' }}>✅</span>
+                  <div>
+                    <div style={{ fontSize: '15px', fontWeight: '800', color: 'var(--text-primary)' }}>Sides generated successfully</div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Review it, then publish or send to Doc Distribution.</div>
+                  </div>
+                </div>
+
+                {!viewed ? (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button className="btn-primary"
+                      onClick={() => { window.open(`${getApiBaseUrl()}/api/sides/${generated._id}/view`, '_blank'); setViewed(true); }}>
+                      View
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                    <button type="button" className="btn-secondary"
+                      onClick={() => window.open(`${getApiBaseUrl()}/api/sides/${generated._id}/view`, '_blank')}>
+                      View again
+                    </button>
+                    <button type="button" className="btn-secondary" disabled={working} onClick={handleMoveToDoc}>
+                      Move to Doc Distribution
+                    </button>
+                    <button className="btn-primary" disabled={working} onClick={handlePublish}>
+                      {working ? 'Publishing…' : 'Publish'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

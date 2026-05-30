@@ -13,6 +13,11 @@ async function uploadSchedule(req, res) {
     const s3Key = `schedules/${req.user._id}/${Date.now()}/schedule.pdf`;
     await uploadFile(s3Key, req.file.buffer);
 
+    // Only one ad-hoc "uploaded" schedule at a time — a new one replaces the prior.
+    if (req.body.source === 'uploaded') {
+      await ShootingSchedule.deleteMany({ uploadedBy: req.user._id, source: 'uploaded' });
+    }
+
     const schedule = await ShootingSchedule.create({
       title: req.body.title || `Shooting Schedule - ${parsed.startDate || new Date().toLocaleDateString()}`,
       project: req.body.scriptId || null,

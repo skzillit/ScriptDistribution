@@ -30,6 +30,18 @@ async function uploadCallSheet(req, res) {
     await uploadFile(s3Key, req.file.buffer);
 
     // Create call sheet record
+    const isUploaded = req.body.source === 'uploaded';
+    // Only one ad-hoc "uploaded" call sheet at a time — a new one replaces the
+    // previous uploaded one (and its sides).
+    if (isUploaded) {
+      const prior = await CallSheet.find({ uploadedBy: req.user._id, source: 'uploaded' });
+      if (prior.length) {
+        const ids = prior.map(c => c._id);
+        await Sides.deleteMany({ callSheet: { $in: ids } });
+        await CallSheet.deleteMany({ _id: { $in: ids } });
+      }
+    }
+
     const callSheet = await CallSheet.create({
       title: req.body.title || `Call Sheet - ${metadata.date || new Date().toLocaleDateString()}`,
       project: req.body.scriptId || null,
@@ -45,7 +57,7 @@ async function uploadCallSheet(req, res) {
       status: 'draft',
       // Uploads from the Autogenerate popup are 'uploaded' (deletable there);
       // anything else is treated as a 'published' call sheet.
-      source: req.body.source === 'uploaded' ? 'uploaded' : 'published',
+      source: isUploaded ? 'uploaded' : 'published',
     });
 
     // NOTE: Sides are NOT auto-generated on upload. The user generates them
@@ -511,8 +523,48 @@ async function generateSides(req, res) {
     }
   }
 
+  // ── Cross-source scene-number dedup ────────────────────────────────────────
+  // A scene number must render from EXACTLY ONE source. Precedence:
+  //   1. Page folders (most explicit user pick) win over script versions.
+  //   2. Within versions / within folders, the first occurrence wins.
+  // This both prevents accidental duplicates (legacy state) and enforces the
+  // "pick a scene from only the source it was selected" rule.
+  const normSN = (s) => String(s).trim().toUpperCase().replace(/PT$/, '');
+  if (sceneFolders.length || versionGroups.length) {
+    const claimedByFolders = new Set();
+    const seenInFolders = new Set();
+    sceneFolders = sceneFolders.map(f => {
+      const kept = (f.sceneNumbers || []).filter(sn => {
+        const k = normSN(sn);
+        if (seenInFolders.has(k)) return false;
+        seenInFolders.add(k);
+        claimedByFolders.add(k);
+        return true;
+      });
+      return { ...f, sceneNumbers: kept };
+    });
+
+    const seenInVersions = new Set();
+    versionGroups = versionGroups.map(g => {
+      const kept = (g.sceneNumbers || []).filter(sn => {
+        const k = normSN(sn);
+        if (claimedByFolders.has(k)) return false;   // page already owns it
+        if (seenInVersions.has(k)) return false;      // earlier version owns it
+        seenInVersions.add(k);
+        return true;
+      });
+      return { ...g, sceneNumbers: kept };
+    }).filter(g => g.sceneNumbers.length > 0);
+  }
+
   // The "primary" version (satisfies the required scriptVersion field).
-  const targetVersionId = multiVersion ? versionGroups[0].versionId : (versionId || script.currentVersion);
+  if (multiVersion && versionGroups.length === 0 && sceneFolders.length === 0) {
+    return res.status(400).json({ error: 'No scenes selected.' });
+  }
+  const primaryVersionForRecord = (multiVersion && versionGroups.length)
+    ? versionGroups[0].versionId
+    : (versionId || script.currentVersion);
+  const targetVersionId = primaryVersionForRecord;
   const version = await ScriptVersion.findById(targetVersionId);
   if (!version) return res.status(404).json({ error: 'Script version not found' });
 
@@ -645,6 +697,11 @@ async function generateSides(req, res) {
     shootDayInfo,
     includeCallSheet: !!includeCallSheet,
     callSheetPages: callSheetPages || 'all',
+    sceneDisplayMode: req.body.sceneDisplayMode === 'crossout' ? 'crossout' : 'hide',
+    // Combined script+pages render order from the "rearrange order" field.
+    sceneOrder: (req.body.orderedScenes && Array.isArray(req.body.sceneOrder))
+      ? req.body.sceneOrder.map(String)
+      : [],
     generatedBy: req.user._id,
     status: 'generating',
     // When the client requests a review step (publish:false), hold the sides out
@@ -1445,18 +1502,10 @@ async function getScriptScenes(req, res) {
 
     res.json({ versionId, totalScenes: scenes.length, scenes });
   } catch (err) {
+    // The script PDF couldn't be read (e.g. missing from storage). Return no
+    // scenes rather than misleading page labels ("P1", "P2", …).
     console.error('getScriptScenes PDF-based detection failed:', err.message);
-    // Fallback: return pages as "scenes" so the UI isn't completely empty
-    const allPages = await ScriptPage.find({ scriptVersion: versionId })
-      .select('pageNumber sceneNumbers rawText')
-      .sort({ pageNumber: 1 });
-    const scenes = allPages.map(p => ({
-      sceneNumber: p.sceneNumbers?.[0] || `P${p.pageNumber}`,
-      heading: `Page ${p.pageNumber}`,
-      intExt: '', location: '', timeOfDay: '',
-      pageStart: p.pageNumber, pageEnd: p.pageNumber,
-    }));
-    res.json({ versionId, totalScenes: scenes.length, scenes });
+    res.json({ versionId, totalScenes: 0, scenes: [], error: 'Could not read the script PDF for this version.' });
   }
 }
 

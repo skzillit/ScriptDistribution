@@ -6,6 +6,21 @@ function pageKey(scriptId, pageId) {
   return `scripts/${scriptId}/pages/${pageId}/page.pdf`;
 }
 
+/**
+ * Accept either a real PDF or a Final Draft (.fdx) file. For FDX we run the
+ * same XML→PDF conversion used for script uploads, so the rest of the page
+ * pipeline (page count, scene detection, sides rendering) sees a normal PDF.
+ */
+async function ensurePdfBuffer(file) {
+  const name = (file.originalname || '').toLowerCase();
+  const mt = file.mimetype || '';
+  const isFdx = name.endsWith('.fdx') || /xml/.test(mt);
+  if (!isFdx) return file.buffer;
+  const { fdxToPdf } = require('../utils/fdxToPdf');
+  const { buffer } = await fdxToPdf(file.buffer.toString('utf8'));
+  return buffer;
+}
+
 /** Count pages in a PDF buffer (best-effort, non-fatal). */
 async function countPdfPages(buffer) {
   try {
@@ -35,7 +50,7 @@ async function createScenePage(req, res) {
   if (!sceneNumber || !String(sceneNumber).trim()) {
     return res.status(400).json({ error: 'Scene number (title) is required.' });
   }
-  if (!req.file) return res.status(400).json({ error: 'A PDF file is required.' });
+  if (!req.file) return res.status(400).json({ error: 'A PDF or Final Draft (.fdx) file is required.' });
 
   const page = await ScenePage.create({
     script: scriptId,
@@ -46,9 +61,10 @@ async function createScenePage(req, res) {
   });
 
   const key = pageKey(scriptId, page._id);
-  await uploadFile(key, req.file.buffer);
+  const pdfBuffer = await ensurePdfBuffer(req.file);
+  await uploadFile(key, pdfBuffer);
   page.pdfUrl = key;
-  page.pageCount = await countPdfPages(req.file.buffer);
+  page.pageCount = await countPdfPages(pdfBuffer);
   await page.save();
 
   res.status(201).json({ scenePage: page });
@@ -66,9 +82,10 @@ async function updateScenePage(req, res) {
 
   if (req.file) {
     const key = pageKey(page.script, page._id);
-    await uploadFile(key, req.file.buffer);
+    const pdfBuffer = await ensurePdfBuffer(req.file);
+    await uploadFile(key, pdfBuffer);
     page.pdfUrl = key;
-    page.pageCount = await countPdfPages(req.file.buffer);
+    page.pageCount = await countPdfPages(pdfBuffer);
   }
 
   await page.save();

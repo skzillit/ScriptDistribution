@@ -2,10 +2,11 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
-// Scripts/Pages, Call sheets and Schedules are all managed from inside the Sides
-// module ("Add Script/Pages" + the generation popups), so Sides is the only nav item.
+// Call sheets and Schedules are managed inside the sides generation popups.
+// Scripts (and their pages) have their own manager page.
 const allMenuItems = [
   { path: '/sides', label: 'Sides', icon: '\uD83D\uDCC4', roles: ['admin', 'editor', 'viewer'] },
+  { path: '/script', label: 'Script', icon: '\uD83C\uDFAC', roles: ['admin', 'editor'] },
 ];
 
 function Sidebar() {
