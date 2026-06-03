@@ -20,7 +20,26 @@ function generateDeviceId() {
   return id;
 }
 
+// ── In-flight counter for the global loader ─────────────────────────────────
+// Every request bumps `inFlight`; every response (success or error) decrements.
+// React UI subscribes via `subscribeApiBusy`; we never use React state inside
+// the axios layer to keep this module free of React deps.
+let inFlight = 0;
+const busyListeners = new Set();
+function emitBusy() {
+  for (const fn of busyListeners) {
+    try { fn(inFlight); } catch (_) { /* listener errors must never break HTTP */ }
+  }
+}
+export function subscribeApiBusy(fn) {
+  busyListeners.add(fn);
+  fn(inFlight);
+  return () => busyListeners.delete(fn);
+}
+
 client.interceptors.request.use((config) => {
+  inFlight++;
+  emitBusy();
   const moduleData = JSON.stringify({
     device_id: moduleDataConfig.deviceId,
     user_id: moduleDataConfig.userId,
@@ -42,6 +61,8 @@ client.interceptors.request.use((config) => {
 // reject with an Error so callers' .catch / try-catch keeps working too.
 client.interceptors.response.use(
   (response) => {
+    inFlight = Math.max(0, inFlight - 1);
+    emitBusy();
     const body = response.data;
     const looksEnveloped =
       body && typeof body === 'object' && !Array.isArray(body)
@@ -56,6 +77,8 @@ client.interceptors.response.use(
     return response;
   },
   (error) => {
+    inFlight = Math.max(0, inFlight - 1);
+    emitBusy();
     // Server-thrown errors still come through here. Unwrap so callers that
     // read err.response.data.error continue to work.
     const body = error.response && error.response.data;

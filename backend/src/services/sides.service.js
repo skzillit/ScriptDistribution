@@ -453,8 +453,11 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
     data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
 
+  const skipPages = options.skipPages instanceof Set ? options.skipPages : null;
   const images = [];
+  const pageNumbers = [];
   for (let p = startPage; p <= endPage; p++) {
+    if (skipPages && skipPages.has(p)) continue;
     try {
       const page = await pdf.getPage(p);
       const viewport = page.getViewport({ scale: SCALE });
@@ -532,6 +535,7 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
       }
 
       images.push(canvas.toBuffer('image/png'));
+      pageNumbers.push(p);
       page.cleanup();
     } catch (err) {
       console.error(`renderCrossoutImages: failed page ${p}:`, err.message);
@@ -540,7 +544,7 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
 
   await pdf.cleanup();
   await pdf.destroy();
-  return [{ sceneNumber: selectedBlocks[0].sceneNumber, images }];
+  return [{ sceneNumber: selectedBlocks[0].sceneNumber, images, pageNumbers }];
 }
 
 /**
@@ -984,20 +988,24 @@ async function extractSides(sidesId, versionId, sceneNumbers, options = {}) {
         if (orderedHere.length) {
           // Rearrange-aware crossout: one chunk per scene in sceneOrder. Other
           // user-picked scenes stay clean inside each chunk via allSelectedScenes.
+          // Track rendered pages so a page shared by two ordered scenes is
+          // emitted only once (credited to the first scene that reaches it).
           const scenesOut = [];
           const imagesOut = [];
           const seenSn = new Set();
+          const renderedPages = new Set();
           for (const sn of orderedHere) {
             if (seenSn.has(sn)) continue;
             seenSn.add(sn);
             const chunk = await renderCrossoutImages(
               originalPdfBuffer, pdfSceneMap, new Set([sn]), pdfTotalPages,
-              { allSelectedScenes: requestedScenes },
+              { allSelectedScenes: requestedScenes, skipPages: renderedPages },
             );
             if (!chunk.length || !chunk[0].images.length) continue;
             const key = `crossout:${sn}`;
             scenesOut.push({ sceneNumber: sn, heading: `Scene ${sn}`, rawText: '', imageKey: key });
             imagesOut.push({ key, sceneNumber: sn, images: chunk[0].images });
+            for (const p of (chunk[0].pageNumbers || [])) renderedPages.add(p);
           }
           if (imagesOut.length) {
             sides._sceneImages = imagesOut;
@@ -1698,15 +1706,17 @@ async function attachFolderImages(sides) {
           if (orderedHere.length) {
             // Rearrange-aware: one folder entry per scene in sceneOrder.
             // Each chunk's grey/X overlay leaves the folder's other picked
-            // scenes clean too (via allSelectedScenes = wantedSet).
+            // scenes clean too (via allSelectedScenes = wantedSet). A page
+            // shared by two ordered scenes appears only once.
             const seenSn = new Set();
+            const renderedPages = new Set();
             let produced = false;
             for (const sn of orderedHere) {
               if (seenSn.has(sn)) continue;
               seenSn.add(sn);
               const chunk = await renderCrossoutImages(
                 buf, sceneMap, new Set([sn]), totalPages,
-                { allSelectedScenes: wantedSet },
+                { allSelectedScenes: wantedSet, skipPages: renderedPages },
               );
               if (!chunk.length || !chunk[0].images.length) continue;
               out.push({
@@ -1716,6 +1726,7 @@ async function attachFolderImages(sides) {
                 images: chunk[0].images,
               });
               produced = true;
+              for (const p of (chunk[0].pageNumbers || [])) renderedPages.add(p);
             }
             if (produced) continue;
             // else fall through to the contiguous chunk attempt below.
@@ -1832,17 +1843,22 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
           : [];
 
         if (orderedHere.length) {
-          // Dedup while preserving first-occurrence order.
+          // Dedup while preserving first-occurrence order. Track every page
+          // already rendered in this version's PDF so a page shared by two
+          // ordered scenes (e.g. scene 1 ends and scene 2A begins on the same
+          // page) is rendered ONLY ONCE — credited to whichever scene reaches
+          // it first in sceneOrder.
           const seenSn = new Set();
+          const renderedPages = new Set();
           for (const sn of orderedHere) {
             if (seenSn.has(sn)) continue;
             seenSn.add(sn);
             const chunk = await renderCrossoutImages(
               pdfBuffer, pdfSceneMap, new Set([sn]), totalPages,
-              { allSelectedScenes: allUserSelected },
+              { allSelectedScenes: allUserSelected, skipPages: renderedPages },
             );
             if (!chunk.length || !chunk[0].images.length) {
-              console.warn(`[sides:multi] crossout rearrange: no pages for scene ${sn} in ${label}`);
+              console.warn(`[sides:multi] crossout rearrange: no fresh pages for scene ${sn} in ${label}`);
               continue;
             }
             const key = `${gi}:crossout:${sn}`;
@@ -1855,6 +1871,7 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
               imageKey: key,
             });
             allSceneImages.push({ key, sceneNumber: sn, images: chunk[0].images });
+            for (const p of (chunk[0].pageNumbers || [])) renderedPages.add(p);
           }
           continue;
         }
@@ -2066,4 +2083,48 @@ async function debugPdfSceneMap(pdfBuffer) {
   };
 }
 
-module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap, debugPdfSceneMap };
+/**
+ * Shared post-processor used by BOTH the script-version scenes endpoint and
+ * the Page (scene folder) scenes endpoint. Guarantees the two surfaces return
+ * structurally identical scene lists — same dedup rule, same heading parse,
+ * same intExt / location / timeOfDay / pageStart / pageEnd fields.
+ *
+ * Returns an array of:
+ *   { sceneNumber, heading, intExt, location, timeOfDay, pageStart, pageEnd }
+ */
+function flattenPdfSceneMap(pdfSceneMap) {
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < pdfSceneMap.length; i++) {
+    const s = pdfSceneMap[i];
+    if (!s.sceneNumber || seen.has(s.sceneNumber)) continue;
+    seen.add(s.sceneNumber);
+
+    // Find next different scene → pageEnd.
+    let nextPage = s.pageNumber;
+    for (let j = i + 1; j < pdfSceneMap.length; j++) {
+      if (pdfSceneMap[j].sceneNumber !== s.sceneNumber) {
+        nextPage = pdfSceneMap[j].pageNumber;
+        break;
+      }
+    }
+
+    const heading = s.heading || '';
+    const match = heading.match(
+      /^(?:\d+[A-Za-z]?[\s.\/)]+\s*)?(INT|EXT|INT\/EXT|I\/E)[.\s]+(.+?)(?:\s*[-–—]\s*(.+))?$/i
+    );
+
+    out.push({
+      sceneNumber: s.sceneNumber,
+      heading: heading.replace(/\s+\d+[A-Za-z]?\s*$/, '').trim() || `Scene ${s.sceneNumber}`,
+      intExt: match ? match[1].toUpperCase() : '',
+      location: match ? match[2].trim() : '',
+      timeOfDay: match && match[3] ? match[3].trim() : '',
+      pageStart: s.pageNumber,
+      pageEnd: nextPage,
+    });
+  }
+  return out;
+}
+
+module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap, debugPdfSceneMap, flattenPdfSceneMap };

@@ -118,19 +118,12 @@ async function listScenePageScenes(req, res) {
 
   try {
     const { getFileBuffer } = require('../services/storage.service');
-    const { buildPdfSceneMap } = require('../services/sides.service');
+    const { buildPdfSceneMap, flattenPdfSceneMap } = require('../services/sides.service');
     const buffer = await getFileBuffer(page.pdfUrl);
     const map = await buildPdfSceneMap(buffer);
-
-    // Dedupe by scene number (keep first occurrence), mirror getScriptScenes shape.
-    const seen = new Set();
-    const scenes = [];
-    for (const s of map) {
-      if (seen.has(s.sceneNumber)) continue;
-      seen.add(s.sceneNumber);
-      const heading = (s.heading || '').replace(/\s+\d+[A-Za-z]?\s*$/, '').trim();
-      scenes.push({ sceneNumber: s.sceneNumber, heading: heading || `Scene ${s.sceneNumber}`, pageStart: s.pageNumber });
-    }
+    // Same shared post-processor the script endpoint uses → identical shape
+    // (sceneNumber, heading, intExt, location, timeOfDay, pageStart, pageEnd).
+    const scenes = flattenPdfSceneMap(map);
     res.json({ pageId: String(page._id), totalScenes: scenes.length, scenes });
   } catch (err) {
     console.error('listScenePageScenes failed:', err.message);

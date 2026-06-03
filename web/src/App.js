@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Header from './components/common/Header';
 import Sidebar from './components/common/Sidebar';
+import GlobalLoader from './components/common/GlobalLoader';
 import ScriptsManagerPage from './pages/ScriptsManagerPage';
 import ScriptDetailPage from './pages/ScriptDetailPage';
 import SidesPage from './pages/SidesPage';
@@ -24,6 +25,7 @@ function App() {
 
   return (
     <>
+      <GlobalLoader />
       <Header />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <Sidebar />

@@ -1454,52 +1454,17 @@ async function getScriptScenes(req, res) {
   const version = await ScriptVersion.findById(versionId);
   if (!version) return res.status(404).json({ error: 'Version not found' });
 
-  // Use the PDF-based scene map (pdfjs) for reliable scene detection.
-  // The text-based buildSceneMap and per-page sceneNumbers both fail on scripts where
-  // scene numbers are on separate lines from the INT./EXT. heading.
-  const { buildPdfSceneMap } = require('../services/sides.service');
+  // Use the PDF-based scene map (pdfjs) for reliable scene detection. The
+  // result is post-processed by `flattenPdfSceneMap` — the SAME helper used
+  // by the Page scenes endpoint, so the two surfaces stay in lock-step.
+  const { buildPdfSceneMap, flattenPdfSceneMap } = require('../services/sides.service');
   const { getFileBuffer, getScriptPdfKey } = require('../services/storage.service');
 
   try {
-    // Load the script PDF and build the scene map via pdfjs
     const script = await Script.findById(version.script);
     const pdfBuffer = await getFileBuffer(getScriptPdfKey(script._id, versionId));
     const pdfSceneMap = await buildPdfSceneMap(pdfBuffer);
-
-    // Dedupe by scene number (keep first occurrence)
-    const seen = new Set();
-    const scenes = [];
-    for (let i = 0; i < pdfSceneMap.length; i++) {
-      const s = pdfSceneMap[i];
-      if (seen.has(s.sceneNumber)) continue;
-      seen.add(s.sceneNumber);
-
-      // Find next different scene for pageEnd
-      let nextPage = s.pageNumber;
-      for (let j = i + 1; j < pdfSceneMap.length; j++) {
-        if (pdfSceneMap[j].sceneNumber !== s.sceneNumber) {
-          nextPage = pdfSceneMap[j].pageNumber;
-          break;
-        }
-      }
-
-      // Parse heading for location / time of day
-      const heading = s.heading || '';
-      const match = heading.match(
-        /^(?:\d+[A-Za-z]?[\s.\/)]+\s*)?(INT|EXT|INT\/EXT|I\/E)[.\s]+(.+?)(?:\s*[-–—]\s*(.+))?$/i
-      );
-
-      scenes.push({
-        sceneNumber: s.sceneNumber,
-        heading: heading.replace(/\s+\d+[A-Za-z]?\s*$/, '').trim() || `Scene ${s.sceneNumber}`,
-        intExt: match ? match[1].toUpperCase() : '',
-        location: match ? match[2].trim() : '',
-        timeOfDay: match && match[3] ? match[3].trim() : '',
-        pageStart: s.pageNumber,
-        pageEnd: nextPage,
-      });
-    }
-
+    const scenes = flattenPdfSceneMap(pdfSceneMap);
     res.json({ versionId, totalScenes: scenes.length, scenes });
   } catch (err) {
     // The script PDF couldn't be read (e.g. missing from storage). Return no
