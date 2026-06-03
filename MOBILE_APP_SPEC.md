@@ -6,6 +6,40 @@ The single source of truth for behavior, look, and constraints is this document.
 
 ---
 
+## 0. Recent enhancements — focus areas for the generating agent
+
+If this spec is being used to **extend an existing implementation**, every item below was added or revised after the initial build. The agent should treat these as the **priority work** and verify each one end-to-end. Every item has a numbered cross-reference into the body of this document.
+
+| # | Enhancement | Where in spec |
+|---|---|---|
+| E1 | API response envelope `{ status, message, messageElements, data }` — wrap/unwrap in client networking | §7 |
+| E2 | Generate Sides is a **full page**, not a modal — back navigation, dedicated route `/sides/generate` | §9.1 |
+| E3 | **Single-script selector** in Generate Sides — switching the script resets all version/page picks | §9.1 |
+| E4 | **Client-side cross-source dedup** — a scene number can only be picked from one source; chips dim 35 % opacity elsewhere | §9.1 |
+| E5 | **Server-side cross-source dedup** (defense-in-depth) — page folders win over versions, first-occurrence within each | §7 / §9.1 |
+| E6 | Generate Sides **no longer shows** "Include call sheet" / "Include schedule" sections (those are Autogenerate-only) | §9.1 |
+| E7 | **Drag-and-drop chip reordering** for scene order — chips can be dragged, removed, and a "+ Add" strip surfaces unused selected scenes; the text input stays as a fallback | §9.1 |
+| E8 | Rearrange order is **visible in both modes** — in Cross-out it reorders the page chunks per selected scene | §9.1 / §10 |
+| E9 | Cross-out **renders only pages containing selected scene content** (gap pages dropped) | §10 |
+| E10 | Cross-out leaves **a generous clearance above the next selected heading** (no X or grey on the heading line) | §10 |
+| E11 | Cross-out **rearrange-aware chunks** — per-scene page groups; scenes in `allSelectedScenes` other than the chunk's focus stay clean | §10 |
+| E12 | **No page-folder "Scene X" header** in the output PDF | §10 |
+| E13 | **No "*** END OF SIDES ***"** trailer | §10 |
+| E14 | **No blank pages between units** — inter-unit separator skips when it doesn't fit, omitted after the last unit | §10 |
+| E15 | **Download button** added to the review stage (now four buttons: View again · Download · Move to Doc Distribution · Publish) | §9.1 |
+| E16 | **Inline PDF viewer modal** — raw signed PDF via `…/download` opened in WebKit/WebView with native PDF UI (`#toolbar=1&navpanes=0&view=FitH`), NOT the `/view` HTML page | §9 |
+| E17 | **FDX support for Pages**, not only scripts — same `.fdx` → PDF conversion pipeline | §6 |
+| E18 | **`SCENE`-keyword headings detected** (e.g. "33 SCENE 33") in addition to `INT./EXT./I/E` slugs | §10 / Appendix B |
+| E19 | **FDX parser promotions** — paragraphs typed as Action whose text starts with `INT./EXT./SCENE` are treated as Scene Headings; inline leading numbers ("18 EXT. JUNGLE — DAY") are stripped and used as the scene number; `<DualDialogue>` wrappers are flattened so nested paragraphs aren't lost; empty scene headings still emit (numbering doesn't shift) | Appendix B |
+| E20 | **Margin-pair heading admission** — a line counts as a scene heading if it carries the **same scene number in both left and right margins**, even without an INT/EXT/SCENE keyword. Catches stylized headings like `INTERCUT: TV INSERT.`, `"TEN YEARS AGO"`, `- UNIVERSITY LECTURE HALL...` | Appendix B |
+| E21 | **Two debug endpoints** for scene-detection diagnostics: `/api/debug/versions/:id/scenes` and `/api/debug/pages/:id/scenes` — return the per-page line dump, detection strategy used, dropped/auto-numbered counts | Appendix C |
+
+The mobile apps **do not need to re-implement the PDF rendering** — every cross-out / rearrange / blank-page / header behavior is handled server-side and emitted as a single PDF. The mobile work is to **send the right payload** (correct `sceneDisplayMode`, `sceneOrder`, `versionScenes`, `pageSelections`) and **display the result** correctly.
+
+For each enhancement, the agent's acceptance check is: build it, then run the acceptance scenario in §15 that calls it out by number (e.g. "E7 / E11 — drag chips in Cross-out mode and confirm the page chunks reorder in the output PDF").
+
+---
+
 ## 1. Tech stack and project layout
 
 ### iOS
@@ -293,7 +327,7 @@ deleteSchedule(id: String) -> { ok: true }
 
 ## 6. Upload layer (common, drop-in replaceable)
 
-**Single uploader** used by Script versions, Pages, Call sheets, Schedules.
+**Single uploader** used by Script versions, **Pages (E17)**, Call sheets, Schedules. The server accepts `.fdx` for **every** upload path that accepts a PDF — the mobile clients don't need to differentiate; they just hand the byte stream and filename to the uploader.
 
 ### API
 **iOS**:
@@ -428,7 +462,7 @@ scheduleId: String? // Autogenerate flow only
   - Status badge (right of title) with color per §2.
   - Meta row (caption): `Scenes: 5, 6, 18 · 3 scene(s) · 0 downloads · MMM D, h:mm A`.
   - Buttons (right-aligned):
-    - **View** (primary, only when `status == "ready"`): fetch signed URL from `sides/:id/download`, open in in-app WebView/WKWebView with native PDF controls (`#toolbar=1&navpanes=0&view=FitH`).
+    - **View** (primary, only when `status == "ready"`) **(E16)**: fetch the signed URL from `GET /sides/:id/download` (not `/view`), open the **raw PDF** in an in-app WebView/WKWebView with native PDF controls (`#toolbar=1&navpanes=0&view=FitH`).
     - **Download**: fetch the signed URL, hand off to system browser/Files (iOS: `UIApplication.shared.open`; Android: `ACTION_VIEW` Intent).
     - **Delete** (admin/editor): confirm dialog "Delete?" → `DELETE /sides/:id`.
 - Pull-to-refresh.
@@ -443,7 +477,7 @@ scheduleId: String? // Autogenerate flow only
 - Sections (in order):
   1. **Call sheet** — grouped **Published** / **Uploaded** radio lists. Each item: title + scene count + **View PDF** button. **+ Upload new** triggers FilePicker → `uploadCallSheet(file, source:"uploaded")` (server replaces any prior uploaded item). Uploaded items show a delete icon.
   2. **Schedule** — same structure as Call sheet.
-  3. **Rearrange scene order** — checkbox; when on, show `Scene order  (Write the scene no. to arrange the order)` text field. Live preview line `Sides will be ordered as: 5, 7, 9` underneath.
+  3. **Rearrange scene order (E7, E8)** — checkbox; when on, show a **draggable chip row** (each chip = a scene number with a numbered prefix and a remove × button). The user can drag any chip onto another to reorder; the chip currently held shows reduced opacity, the drop target shows a dashed accent border. A muted **"Add: +N +N …"** strip beneath the chip row surfaces selected scenes that aren't in the order yet — tapping one appends it. Underneath the chips, a plain text input `(drag chips to reorder, or type below)` stays as a fallback (both edit the same source-of-truth string). Live preview line `Sides will be ordered as: 5, 7, 9` underneath. **Visible in both Hide and Cross-out modes.**
   4. **Unselected scenes** — radio options:
      - `Hide unselected scenes` (default) — only selected scenes appear.
      - `Cross out unselected scenes` — see §10.
@@ -452,16 +486,16 @@ scheduleId: String? // Autogenerate flow only
 - **Review stage** (inside same sheet, replacing form):
   - Spinner + "Generating sides…" while polling `GET /sides/:id` every 2 s up to 90 attempts. Stop on `ready` or `error`.
   - On error: red header "Generation failed" + envelope/error message.
-  - On ready: green card "✅ Sides generated successfully" + buttons:
-    - **View** (toggles to "View again" after first click).
-    - **Publish** (`POST /sides/:id/publish`).
+  - On ready: green card "✅ Sides generated successfully" + **four buttons (E15)**:
+    - **View** (toggles to "View again" after first click) — opens the **raw PDF** (`GET /sides/:id/download` → signed URL) inside the inline PDF viewer (E16), not the `/view` HTML page.
+    - **Download** — same `download` endpoint; hand off to the system browser / Files (iOS `UIApplication.shared.open`; Android `ACTION_VIEW`).
     - **Move to Doc Distribution** (`POST /sides/:id/doc-distribution`).
+    - **Publish** (`POST /sides/:id/publish`).
 
-#### GenerateSidesScreen (full screen, **not** a modal)
-- Back button (← Back to Sides) navigates back.
+#### GenerateSidesScreen (full screen, **not** a modal, E2)
+- Mounted at its own route — on web `/sides/generate`; on mobile, a pushed destination on the Sides tab's nav stack. Back button (← Back to Sides) navigates back.
 - Sections, in order:
-  1. **Script picker** (dropdown / Picker). Lists every script the user owns, newest first. Each entry shows `<title>` + ` (no file — pages only)` suffix if no current version. Default selection = active script.
-     Switching script clears all version/page picks and resets rearrange order.
+  1. **Single-script picker (E3)** (dropdown / Picker). Lists every script the user owns, newest first. Each entry shows `<title>` + ` (no file — pages only)` suffix if no current version. Default selection = active script. **Only ONE script can be selected at a time**; switching the picker **clears all version picks, all page picks, the rearrange flag and the order input**.
   2. **Pick scenes (versions)** — for the selected script only:
      - Lists versions inside an expandable group.
      - Each version is a collapsible card showing scene chips. Multi-select toggles each scene.
@@ -470,22 +504,25 @@ scheduleId: String? // Autogenerate flow only
      - Lists scene folders as collapsible cards. Each shows colored swatch + sceneNumber + page count.
      - On expand: chips of scenes detected in that Page's PDF, multi-select. If no scenes detected, show a single "Include whole PDF" checkbox instead.
   4. **Summary row** — all selected scenes (union of version picks + page picks, deduped), shown as chips with the live count.
-  5. **Rearrange scene order** — **hidden when `sceneDisplayMode == "crossout"`.** When shown: checkbox + text field with live preview, same as Autogenerate.
+  5. **Rearrange scene order (E7, E8)** — visible in **both** Hide and Cross-out modes. Uses the same draggable chip row as Autogenerate: drag to reorder, × to remove, "Add: +N" strip for unused selected scenes, text-input fallback. In Cross-out mode the order rearranges the **page chunks** for each selected scene (see §10).
   6. **Unselected scenes** — same radio options as Autogenerate.
   7. **Title** — optional.
-  8. **Submit** → review stage (identical to Autogenerate).
+  8. **Submit** → review stage (identical four-button stage as Autogenerate, §9.1).
 
-**Client-side cross-source dedup (mandatory):**
+**Client-side cross-source dedup (E4, mandatory):**
 - Compute `claimedScenes = { scene numbers picked from ANY version OR any page }` (case-normalized, strip trailing `PT`).
-- In every picker (each version + each page folder), any scene chip whose number is in `claimedScenes` but not picked in the current source is shown **disabled**, 35% opacity, with tooltip / accessible label `"Already picked from another source"`. Tapping does nothing.
+- In every picker (each version + each page folder), any scene chip whose number is in `claimedScenes` but not picked in the current source is shown **disabled**, 35 % opacity, with tooltip / accessible label `"Already picked from another source"`. Tapping does nothing.
 - "Select all" silently skips scenes claimed elsewhere and toasts `"Skipped scenes already picked from another source."`
 - A user CAN toggle off a scene they already picked here.
 
-**Important:** No "Include call sheet in sides" / "Include schedule in sides" sections appear here. Those exist only in Autogenerate.
+**Server-side cross-source dedup (E5)** runs again before extraction. Even if a duplicate slips through (e.g. legacy state), the server enforces "one scene number → one source", with **page folders winning** and **first-occurrence within each kind** winning on ties. Mobile clients can rely on this and don't need to deduplicate the request payload, but they should still apply the client-side dedup in the UI for feedback.
 
-#### SidesPdfViewer (presented modally / pushed)
+**Important (E6):** **No** "Include call sheet in sides" / "Include schedule in sides" sections appear here. Those exist only in Autogenerate.
+
+#### SidesPdfViewer (presented modally / pushed, E16)
 - Header bar: title, version label, `Open in browser` button (system handoff), `Close`.
-- WebView loading the signed PDF download URL with native PDF rendering (`#toolbar=1&navpanes=0&view=FitH`).
+- WebView loading the **raw, signed PDF download URL** (`GET /sides/:id/download` → `downloadUrl`) with native PDF rendering (`#toolbar=1&navpanes=0&view=FitH`).
+- Same component is reused by the Script tab as **ScriptPdfViewer** using `GET /versions/:id/download`. **Never** point this WebView at `/api/sides/:id/view` or `/api/highlight/:versionId` — those are the HTML page viewers used historically by the web app and don't render as a native PDF inside the mobile WebView.
 
 ### 9.2 SCRIPT tab
 
@@ -529,16 +566,35 @@ Form (Modal / FullScreenDialog / BottomSheet):
 
 ---
 
-## 10. Cross-out rendering contract (server-side; clients only display)
+## 10. Sides PDF rendering contract (server-side; clients only display)
 
-When the user picks `sceneDisplayMode: "crossout"`, the server produces a sides PDF that:
-- Keeps **only pages containing selected-scene content** (drops fully-unselected gap pages).
-- On each kept page: full page rendered (page number + margins preserved).
-- Each contiguous run of unselected scenes on the page is shaded light grey (≈45 % opacity) and crossed with one big X drawn corner-to-corner, stopping well above the next selected heading.
-- Selected scenes stay clean and unshaded.
-- No "SIDES" running header; no per-Page "Scene X" header.
+When the user submits **Generate Sides** or **Autogenerate Sides**, the server produces a single PDF. The mobile apps do **not** render the PDF themselves — they only send the right payload and display whatever the server returns. The contract below documents what the agent should expect to see so it can write meaningful UI tests.
 
-Mobile clients do nothing here — just send `sceneDisplayMode` correctly and render whatever PDF the server returns.
+### 10.1 Hide mode (`sceneDisplayMode: "hide"`)
+- Only the selected scenes appear, each cropped to its own region with the heading at the top.
+- Script scenes and Page-folder scenes are interleaved in the user's `sceneOrder` if `orderedScenes: true`; otherwise script-then-pages in natural order.
+- No "SIDES" running header (E13 trailer also removed — see below).
+
+### 10.2 Cross-out mode (`sceneDisplayMode: "crossout"`)
+- Keeps **only pages containing selected-scene content (E9)** — gap pages (fully unselected scenes between two far-apart picks) are **dropped entirely**, not rendered fully crossed out.
+- On each kept page: the **full page** is rendered (page number + margins preserved).
+- Each contiguous run of unselected scenes on the page is shaded light grey (≈ 45 % opacity) and crossed with **one big X drawn corner-to-corner** across the run.
+- **Generous clearance above the next selected heading (E10)** — the grey rectangle and X stop ~22 px above the next heading's top edge, so the kept scene's heading text is never overlaid.
+- **Selected scenes stay clean** and unshaded.
+
+### 10.3 Cross-out + rearrange (E11)
+When the user has both `sceneDisplayMode: "crossout"` and a non-empty `sceneOrder`, the server emits **one page-chunk per scene** in `sceneOrder` instead of a single contiguous run:
+- For each scene `N` in `sceneOrder`, only the pages where scene `N` has content are rendered.
+- Inside each chunk, **all user-picked scenes** (the full `versionScenes + pageSelections` union) are left clean — only scenes that are NOT in the user's selection are greyed/X'd. So if another picked scene happens to share a page with `N`, it stays readable inside `N`'s chunk.
+- The same scene may legitimately appear in multiple chunks if `sceneOrder` mentions it more than once (or if two ordered scenes overlap on a page).
+
+### 10.4 Trim rules (applied to every generated sides PDF)
+- **No "SIDES" / title running header** on any page.
+- **No per-Page-folder "Scene X" header (E12)** before page-folder images.
+- **No "*** END OF SIDES ***" trailer (E13)**.
+- **No blank pages between units (E14)** — the inter-unit separator is skipped whenever it doesn't fit on the current page, and is omitted entirely after the last unit. PDFs end exactly on the last unit's last page.
+
+Mobile clients do nothing for any of the above — just send the correct payload and render the returned PDF.
 
 ---
 
@@ -601,25 +657,49 @@ WebSocket at `wss://<host>/ws`:
 
 ## 15. Acceptance checklist (must all pass)
 
-1. **Fresh install**: app launches, Sides tab opens, list loads from prod backend (envelope unwrap successful).
+The bracketed `[Ex]` tags map each scenario back to the enhancements in §0 — when one fails, jump to the matching section.
+
+1. **Fresh install**: app launches, Sides tab opens, list loads from prod backend (envelope unwrap successful). **[E1]**
 2. **Tabs**: bottom bar shows exactly Sides + Script; tapping switches; back button doesn't cross tabs.
-3. **Add Script**: upload an `.fdx`. Within seconds the card shows `<n> pages > 0` and version "v1".
+3. **Add Script**: upload an `.fdx`. Within seconds the card shows `<n> pages > 0` and version "v1". **[E19]**
 4. **Replace script**: choose a new PDF; card updates to `v2`.
-5. **Add Page** under a script: upload PDF; page count populates; tap to expand and see detected scene chips.
-6. **Generate Sides**:
+5. **Add Page** under a script: upload an `.fdx`. Page count populates; tap to expand and see detected scene chips. **[E17, E19]**
+6. **Generate Sides — full screen + single script picker**:
+   - Tapping Generate Sides pushes a dedicated screen (not a sheet). **[E2]**
+   - Script picker dropdown lists every owned script; switching it clears all picks & order. **[E3]**
+7. **Generate Sides — cross-source dedup**:
    - Pick scene from version A.
    - Open Page X — the same scene number is dimmed and untappable; tooltip says "Already picked from another source".
-   - Select **Cross out unselected scenes** — Rearrange section disappears.
-   - Submit → review → View renders only pages with selected content (no "SIDES" header, no per-Page header).
-7. **Autogenerate Sides**:
-   - Upload a new call sheet inside the sheet; the prior uploaded call sheet is replaced server-side.
-   - Submit → review → Publish → side appears in the main list with status `ready`.
-8. **View Sides**: tap View → raw PDF opens in-app with native controls; tap Open in browser → system browser opens it.
-9. **View Script**: tap View on a script card → raw PDF opens in-app.
-10. **Theme**: dark mode matches §2 dark tokens; light mode matches §2 light tokens; system toggle updates instantly.
-11. **Validation**: try submitting blank Add Script — error toast `"Script name is required"`. Try Generate Sides with no picks — error toast `"Select at least one scene or page"`.
-12. **Server error**: simulate (or force) `status: 0` from any endpoint — UI shows the envelope `message`, never crashes.
-13. **Force-quit and relaunch**: state restored; same `deviceId` is sent (auth still works).
+   - "Select all" on Page X silently skips that scene and toasts "Skipped scenes already picked from another source." **[E4]**
+8. **Generate Sides — no call sheet / schedule sections** on this screen. **[E6]**
+9. **Generate Sides — drag-and-drop reorder (Hide)**:
+   - Select 3+ scenes, enable Rearrange — chips appear.
+   - Drag the third chip onto the first → order updates live; preview line reflects it.
+   - Tap × on a chip → it disappears; an `Add: +N` button appears for it; tapping appends it again.
+   - Text input still edits the same order. **[E7]**
+10. **Generate Sides — cross-out, no rearrange**:
+    - Pick scenes from version A; choose `Cross out unselected scenes`; rearrange is still visible. **[E8]**
+    - Submit → review → View shows only pages containing picked content (gap pages are missing); selected scene headings are uncovered (no grey/X over them); no SIDES header; no `*** END OF SIDES ***` trailer; no blank pages. **[E9, E10, E12, E13, E14]**
+11. **Generate Sides — cross-out + rearrange (E11)**:
+    - Pick scenes 5, 18, 19 from a version; enable Rearrange; drag chips into order `19, 5, 18`.
+    - Submit → review → View. The PDF has three chunks in `19 → 5 → 18` order, each a full-page render of the pages containing that scene's content; non-selected scenes are greyed/X'd; if two of `{5, 18, 19}` share a page, both stay clean inside whichever chunk renders it.
+12. **Generate Sides — cross-out + rearrange across versions + pages**:
+    - Pick scene 19 from a Page and 5, 18 from a version; order `19, 5, 18`; cross-out.
+    - Output interleaves the Page's chunk and the script chunks in that order.
+13. **Autogenerate Sides**:
+    - Upload a new call sheet inside the sheet; the prior uploaded call sheet is replaced server-side.
+    - Submit → review → Publish → side appears in the main list with status `ready`.
+14. **Review stage — four buttons (E15)**: View again, **Download**, Move to Doc Distribution, Publish — all present and functional.
+15. **View Sides / View Script (E16)**: tap View → raw PDF opens **inside** the WebView with native PDF controls (toolbar, page-fit), NOT an HTML page; tap Open in browser → system browser opens it.
+16. **FDX heading detection — slug variants**:
+    - Upload an FDX whose author typed scene-like lines as **Action** ("EXT. JUNGLE - DAY") or used "SCENE 33" / "33 SCENE 33" — they appear in the version's scene list. **[E18, E19]**
+17. **PDF heading detection — margin pair (E20)**:
+    - Upload a PDF containing scenes like `2A  INTERCUT: TV INSERT.  2A`, `4  "TEN YEARS AGO"  4`, `7  - UNIVERSITY LECTURE HALL...  7` — all three appear in the version's scene list even without INT/EXT/SCENE keywords.
+18. **Theme**: dark mode matches §2 dark tokens; light mode matches §2 light tokens; system toggle updates instantly.
+19. **Validation**: try submitting blank Add Script — error toast `"Script name is required"`. Try Generate Sides with no picks — error toast `"Select at least one scene or page"`.
+20. **Server error (envelope)**: simulate (or force) `status: 0` from any endpoint — UI shows the envelope `message` verbatim, never crashes. **[E1]**
+21. **Debug endpoints (E21)** are wired up only as developer affordances; they shouldn't be exposed in the UI but the agent should hit `GET /api/debug/versions/:id/scenes` and `GET /api/debug/pages/:id/scenes` during development to verify the detection-strategy distribution before shipping any heading-related claims.
+22. **Force-quit and relaunch**: state restored; same `deviceId` is sent (auth still works).
 
 ---
 
@@ -650,3 +730,110 @@ WebSocket at `wss://<host>/ws`:
 - Keep the `Networking/` and `Upload/` folders independently replaceable: no UI code inside, no app-specific knowledge except endpoint paths.
 - Prefer code that surfaces problems early: validate at the form layer, not deep inside the network layer.
 - Every text string the user sees should be a single named constant in a `Strings.swift` / `strings.xml` resource — no in-line copy.
+
+---
+
+## Appendix A — App constants (copy strings, magic numbers)
+
+These string literals appear in the web app and must be matched exactly by the mobile clients:
+
+| Use | String |
+|---|---|
+| Autogenerate gate | `No published script available. Please upload script to generate sides` |
+| Generate gate | `No active script or pages found. Please upload script to pages to generate sides` |
+| Add Script — name required | `Script name is required` |
+| Add Page — number required | `Scene number (title) is required.` |
+| Add Page — file required | `A PDF or Final Draft (.fdx) file is required.` |
+| Generate Sides — script | `No script found` |
+| Generate Sides — picks | `Select at least one scene or page` |
+| Cross-source dedup blocked tap | `Already picked from another source` |
+| Cross-source dedup "Select all" | `Skipped scenes already picked from another source.` |
+| Autogenerate submit gate | `Select or upload a call sheet first` |
+| Autogenerate submit gate | `No scenes to generate` |
+| Script delete confirm | `Deleting this script will also delete the pages uploaded under it. Continue?` |
+| Realtime ready toast | `Sides ready: <title>` |
+| Realtime error toast | `Sides failed: <error>` |
+| Review stage card | `Sides generated successfully` |
+| Empty scripts list desc | `Add a script (PDF/FDX) — or create one by name and add pages first.` |
+| Section labels | `Pick scenes (versions)`, `Pages`, `Unselected scenes`, `Scene order  (drag chips to reorder, or type below)` |
+| Rearrange live preview | `Sides will be ordered as: <list>` |
+
+| Magic number | Value |
+|---|---|
+| Poll interval after generation submit | 2 s |
+| Max poll attempts | 90 |
+| Max upload size | 25 MB |
+| List default limit | 50 sides, 100 scripts |
+| Scene-pick chip disabled opacity | 0.35 |
+| Cross-out grey opacity | 0.45 |
+| Cross-out clearance above next heading | 22 px (canvas) |
+
+---
+
+## Appendix B — Server-side heading detection (read-only reference for the agent, E18 / E19 / E20)
+
+The agent does **not** re-implement this — it's documented so the agent can write meaningful tests against the version/page scene lists.
+
+A line on a PDF page is treated as a scene heading if **either**:
+
+1. Its text matches the slug regex: `\b(?:INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+|\bSCENE\b` **(E18)**, **OR**
+2. It carries the **same scene number in BOTH the left and right margin** (left < 15 % page width, right > 70 % page width) **(E20)**.
+
+For each admitted heading, the scene number is resolved by the first hit of:
+1. Left-margin digit token (matches `^(\d+[A-Za-z]{0,3})\.?$`)
+2. Right-margin digit token (same regex)
+3. Inline leading number: `^(\d+[A-Za-z]{0,3})\s+(?:INT|EXT|INT\/EXT|I\/E|SCENE)`
+4. Trailing digit-only item at the end of the line
+
+After scanning the whole PDF: if any scene has a real number, **unnumbered scene-like lines are dropped**. If none have numbers, every detected heading is auto-numbered sequentially `1, 2, 3, …`.
+
+**FDX-specific parser fixes (E19):**
+- `<DualDialogue>` wrappers are flattened so nested paragraphs aren't lost.
+- Paragraphs typed `Action` whose text starts with `INT./EXT./INT/EXT/I/E/SCENE` are promoted to `Scene Heading`.
+- Inline leading numbers ("18 EXT. JUNGLE — DAY", "33 SCENE 33") are stripped from heading text and used as the scene number when `<SceneProperties Number="…"/>` is missing.
+- Scene Heading paragraphs are emitted even when their `<Text>` block is empty — numbering doesn't shift.
+
+---
+
+## Appendix C — Debug endpoints (developer-only, E21)
+
+Two diagnostic endpoints expose the raw scene-map detection for any PDF the user owns. They are **not** part of the public mobile UI; use them during development to investigate why a specific scene isn't being picked.
+
+| Endpoint | Use |
+|---|---|
+| `GET /api/debug/versions/:versionId/scenes` | Diagnose a script version PDF |
+| `GET /api/debug/pages/:id/scenes` | Diagnose a Page (scene folder) PDF |
+
+Both require the standard auth headers. Response shape:
+
+```jsonc
+{
+  "summary": {
+    "totalPages": 42,
+    "headingsDetected": 38,
+    "numbered": 36,
+    "droppedAsUnnumbered": 2,
+    "autoNumberedFallback": false,
+    "finalSceneCount": 36,
+    "detectionStrategies": { "leftMargin": 34, "rightMargin": 1, "inlineLead": 1, "none": 2 }
+  },
+  "survivors": [ { "page": 1, "sceneNumber": "5", "heading": "5 INT. CORRIDOR – DAY 5", "detectedBy": "leftMargin" } ],
+  "dropped":   [ { "page": 3, "sceneNumber": null, "heading": "EXT. HOUSE - DAY", "detectedBy": "none" } ],
+  "headings":  [ /* every detected heading (numbered + unnumbered) */ ],
+  "pages": [
+    {
+      "page": 1, "pageWidth": 612, "leftMarginCutoff": 91.8, "rightMarginCutoff": 428.4,
+      "lines": [
+        {
+          "text": "5  INT. CORRIDOR - DAY  5", "pdfY": 720.3,
+          "items": [{"str":"5","pdfX":54.0},{"str":"INT. CORRIDOR - DAY","pdfX":90.0},{"str":"5","pdfX":560.0}],
+          "matchesSlug": true, "marginPair": true, "matchesHeading": true,
+          "sceneNumber": "5", "detectedBy": "leftMargin"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The agent should hit one of these whenever heading detection seems off, and gate any code change against the `summary.detectionStrategies` distribution.

@@ -5,6 +5,7 @@ import { getApiBaseUrl } from '../../api/client';
 import { toast } from 'react-toastify';
 import UploadCallSheetModal from './UploadCallSheetModal';
 import UploadScheduleModal from './UploadScheduleModal';
+import { DraggableSceneOrder } from './GenerateSidesModal';
 
 /**
  * Autogenerate Sides popup.
@@ -297,8 +298,14 @@ function AutogenerateSidesModal({ scriptId, scheduleId, onClose, onSuccess }) {
 
             {rearrange && (
               <div style={{ marginBottom: '20px' }}>
-                <label style={L}>Scene order  (Write the scene no. to arrange the order)</label>
-                <input value={orderInput} onChange={e => setOrderInput(e.target.value)} placeholder="e.g. 12, 9, 14A, 7" />
+                <label style={L}>Scene order  (drag chips to reorder, or type below)</label>
+                <DraggableSceneOrder
+                  value={orderInput}
+                  available={scenes}
+                  onChange={setOrderInput}
+                />
+                <input value={orderInput} onChange={e => setOrderInput(e.target.value)} placeholder="e.g. 12, 9, 14A, 7"
+                  style={{ marginTop: '8px' }} />
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
                   {orderedSceneList.length} scene(s): {orderedSceneList.join(', ')}
                 </div>
@@ -418,6 +425,13 @@ function AutogenerateSidesModal({ scriptId, scheduleId, onClose, onSuccess }) {
                     <button type="button" className="btn-secondary"
                       onClick={() => window.open(`${getApiBaseUrl()}/api/sides/${generated._id}/view`, '_blank')}>
                       View again
+                    </button>
+                    <button type="button" className="btn-secondary"
+                      onClick={() => sidesApi.download(generated._id).then(r => {
+                        const u = r.data.downloadUrl;
+                        window.location.href = u && u.startsWith('/') ? `${getApiBaseUrl()}${u}` : u;
+                      })}>
+                      Download
                     </button>
                     <button type="button" className="btn-secondary" disabled={working} onClick={handleMoveToDoc}>
                       Move to Doc Distribution

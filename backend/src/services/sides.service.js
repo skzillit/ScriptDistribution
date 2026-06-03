@@ -123,29 +123,32 @@ async function buildPdfSceneMap(pdfBuffer) {
 
     for (const line of linesMap) {
       const upper = line.text.toUpperCase();
-      if (!HEADING_RE.test(upper)) continue;
 
-      // SCENE NUMBER EXTRACTION — only trust digit-only items at LEFT or RIGHT margin
-      // (inline numbers within heading text are NOT scene numbers — they could be years,
-      // addresses, phone numbers, etc.)
+      // Compute margin scene-number tokens first — they're both a strong
+      // signal that this line IS a heading (used as a fallback admission rule)
+      // AND the most authoritative source for the scene number itself.
+      const leftMarginItem = line.items.find(it => it.pdfX < LEFT_MARGIN && SCENE_NUM_RE.test(it.str));
+      const rightMarginItem = line.items.find(it => it.pdfX > RIGHT_MARGIN && SCENE_NUM_RE.test(it.str));
+      const leftMatch = leftMarginItem && leftMarginItem.str.match(SCENE_NUM_RE);
+      const rightMatch = rightMarginItem && rightMarginItem.str.match(SCENE_NUM_RE);
+      const marginPair = leftMatch && rightMatch
+        && leftMatch[1].toUpperCase() === rightMatch[1].toUpperCase();
+
+      // Admit a line as a heading if it matches a slug (INT./EXT./I/E./SCENE)
+      // OR it carries the same scene number in BOTH left and right margins —
+      // a convention used by stylized headings like:
+      //   2A   INTERCUT: TV INSERT.            2A
+      //   4    "TEN YEARS AGO"                  4
+      //   7    - UNIVERSITY LECTURE HALL...     7
+      // Plain body text never has matching digit tokens at both margins.
+      if (!HEADING_RE.test(upper) && !marginPair) continue;
+
       let num = null;
 
-      // Check for a digit-only item at the left margin (before the heading's first non-digit text)
-      // Scene number items are typically separated from the heading by significant whitespace.
-      const leftMarginItem = line.items.find(it => it.pdfX < LEFT_MARGIN && SCENE_NUM_RE.test(it.str));
-      if (leftMarginItem) {
-        const m = leftMarginItem.str.match(SCENE_NUM_RE);
-        if (m) num = m[1];
-      }
-
-      // Check for a digit-only item at the right margin
-      if (!num) {
-        const rightMarginItem = line.items.find(it => it.pdfX > RIGHT_MARGIN && SCENE_NUM_RE.test(it.str));
-        if (rightMarginItem) {
-          const m = rightMarginItem.str.match(SCENE_NUM_RE);
-          if (m) num = m[1];
-        }
-      }
+      // 1) Left-margin number
+      if (leftMatch) num = leftMatch[1];
+      // 2) Right-margin number
+      if (!num && rightMatch) num = rightMatch[1];
 
       // Fallback: text-level leading (only if leading is BEFORE any INT./EXT. and is followed
       // by whitespace, meaning it's clearly a scene number not part of the heading text)
@@ -405,6 +408,14 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
   const SCALE = 2;
   const norm = (s) => String(s).toUpperCase().replace(/PT$/, '');
   const requested = new Set(Array.from(requestedSceneNumbers).map(norm));
+  // Scenes that stay clean (not greyed/X'd). Defaults to `requested` for the
+  // common case where the page-keep filter and "don't cross out" set are the
+  // same. When rearrange-in-crossout is active, the caller passes the FULL
+  // user selection here so that other selected scenes aren't crossed out
+  // when we're focused on rendering one specific scene's chunk.
+  const cleanSet = options.allSelectedScenes
+    ? new Set(Array.from(options.allSelectedScenes).map(norm))
+    : requested;
 
   // Build full scene "blocks" (every scene, selected or not). Each block spans
   // from its heading down to the next different scene's heading.
@@ -418,7 +429,8 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
     }
     blocks.push({
       sceneNumber: s.sceneNumber,
-      selected: requested.has(s.sceneNumber),
+      selected: requested.has(s.sceneNumber),     // drives the page-keep test
+      clean: cleanSet.has(s.sceneNumber),          // drives the grey/X test
       startPage: s.pageNumber,
       startPdfY: s.pdfY,
       startFontHeightPdf: s.fontHeightPdf || 12,
@@ -480,7 +492,7 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
       const HEADING_CLEAR = 22; // canvas px of clearance above the next heading's TOP
       const segs = [];
       for (const b of blocks) {
-        if (b.selected) continue;
+        if (b.clean) continue;                   // user-selected scenes stay clean
         if (p < b.startPage || p > b.endPage) continue;
         // Top: at the heading (this page) or the page top (continuation from a prior page).
         let top = (p === b.startPage)
@@ -965,21 +977,54 @@ async function extractSides(sidesId, versionId, sceneNumbers, options = {}) {
 
       // "Cross out" mode: keep full pages and strike through unselected scenes.
       if (sides.sceneDisplayMode === 'crossout') {
-        const crossImages = await renderCrossoutImages(originalPdfBuffer, pdfSceneMap, requestedScenes, pdfTotalPages);
-        if (crossImages.length && crossImages[0].images.length) {
-          const key = '__crossout__';
-          sides._sceneImages = [{ key, sceneNumber: '__crossout__', images: crossImages[0].images }];
-          sides.scenes = [{
-            sceneNumber: [...requestedScenes].join(', '),
-            heading: `Scenes ${[...requestedScenes].join(', ')}`,
-            rawText: '',
-            imageKey: key,
-          }];
-          sides.totalScenes = 1;
-          sides.sceneNumbers = [...requestedScenes];
-          imageRenderingSucceeded = true;
+        const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
+          ? sides.sceneOrder.map(normalizeSceneNumber).filter(sn => requestedScenes.has(sn))
+          : [];
+
+        if (orderedHere.length) {
+          // Rearrange-aware crossout: one chunk per scene in sceneOrder. Other
+          // user-picked scenes stay clean inside each chunk via allSelectedScenes.
+          const scenesOut = [];
+          const imagesOut = [];
+          const seenSn = new Set();
+          for (const sn of orderedHere) {
+            if (seenSn.has(sn)) continue;
+            seenSn.add(sn);
+            const chunk = await renderCrossoutImages(
+              originalPdfBuffer, pdfSceneMap, new Set([sn]), pdfTotalPages,
+              { allSelectedScenes: requestedScenes },
+            );
+            if (!chunk.length || !chunk[0].images.length) continue;
+            const key = `crossout:${sn}`;
+            scenesOut.push({ sceneNumber: sn, heading: `Scene ${sn}`, rawText: '', imageKey: key });
+            imagesOut.push({ key, sceneNumber: sn, images: chunk[0].images });
+          }
+          if (imagesOut.length) {
+            sides._sceneImages = imagesOut;
+            sides.scenes = scenesOut;
+            sides.totalScenes = scenesOut.length;
+            sides.sceneNumbers = scenesOut.map(s => s.sceneNumber);
+            imageRenderingSucceeded = true;
+          } else {
+            console.warn('[sides] crossout rearrange produced no pages');
+          }
         } else {
-          console.warn('[sides] crossout produced no pages for this PDF');
+          const crossImages = await renderCrossoutImages(originalPdfBuffer, pdfSceneMap, requestedScenes, pdfTotalPages);
+          if (crossImages.length && crossImages[0].images.length) {
+            const key = '__crossout__';
+            sides._sceneImages = [{ key, sceneNumber: '__crossout__', images: crossImages[0].images }];
+            sides.scenes = [{
+              sceneNumber: [...requestedScenes].join(', '),
+              heading: `Scenes ${[...requestedScenes].join(', ')}`,
+              rawText: '',
+              imageKey: key,
+            }];
+            sides.totalScenes = 1;
+            sides.sceneNumbers = [...requestedScenes];
+            imageRenderingSucceeded = true;
+          } else {
+            console.warn('[sides] crossout produced no pages for this PDF');
+          }
         }
       } else if (renderSpecs.length > 0) {
         const sceneImages = await renderSceneImages(originalPdfBuffer, renderSpecs);
@@ -1254,15 +1299,20 @@ function generateSidesPdf(sides) {
         .map(x => x.u);
     }
 
-    for (const unit of units) {
+    for (let ui = 0; ui < units.length; ui++) {
+      const unit = units[ui];
       if (unit.kind === 'scene') renderSceneUnit(unit.data);
       else renderFolderUnit(unit.data);
 
-      // Separator line between units
-      y += 8;
-      if (y > PAGE_BOTTOM) { doc.addPage(); y = 55; }
-      doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
-      y += 16;
+      // Inter-unit separator: draw ONLY if it fits on the current page AND
+      // there's another unit after it. Never force a new page just to host a
+      // separator line, and never emit a trailing separator — both produce a
+      // near-blank page at the end / between sections.
+      if (ui < units.length - 1 && y + 24 <= PAGE_BOTTOM) {
+        y += 8;
+        doc.moveTo(60, y).lineTo(552, y).stroke('#CCCCCC');
+        y += 16;
+      }
     }
 
     // Mark where schedule section starts (1-based page number within the sides PDF).
@@ -1369,10 +1419,6 @@ function generateSidesPdf(sides) {
         }
       }
     }
-
-    doc.moveDown(2);
-    doc.font('Courier').fontSize(9).fillColor('#999999');
-    doc.text('*** END OF SIDES ***', { align: 'center' });
 
     doc.end();
   });
@@ -1644,7 +1690,38 @@ async function attachFolderImages(sides) {
         // Cross-out mode: keep the page PDF's full pages and strike through the
         // scenes the user did NOT pick (same visual as the script cross-out).
         if (sides.sceneDisplayMode === 'crossout') {
-          const crossImages = await renderCrossoutImages(buf, sceneMap, new Set(wanted.map(normalize)), totalPages);
+          const wantedSet = new Set(wanted.map(normalize));
+          const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
+            ? sides.sceneOrder.map(normalize).filter(sn => wantedSet.has(sn))
+            : [];
+
+          if (orderedHere.length) {
+            // Rearrange-aware: one folder entry per scene in sceneOrder.
+            // Each chunk's grey/X overlay leaves the folder's other picked
+            // scenes clean too (via allSelectedScenes = wantedSet).
+            const seenSn = new Set();
+            let produced = false;
+            for (const sn of orderedHere) {
+              if (seenSn.has(sn)) continue;
+              seenSn.add(sn);
+              const chunk = await renderCrossoutImages(
+                buf, sceneMap, new Set([sn]), totalPages,
+                { allSelectedScenes: wantedSet },
+              );
+              if (!chunk.length || !chunk[0].images.length) continue;
+              out.push({
+                label: sn,
+                color: folder.color,
+                description: produced ? '' : folder.description,
+                images: chunk[0].images,
+              });
+              produced = true;
+            }
+            if (produced) continue;
+            // else fall through to the contiguous chunk attempt below.
+          }
+
+          const crossImages = await renderCrossoutImages(buf, sceneMap, wantedSet, totalPages);
           if (crossImages.length && crossImages[0].images.length) {
             out.push({
               label: wanted.join(', '),
@@ -1738,9 +1815,51 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
       const totalPages = probeDoc.numPages;
       await probeDoc.destroy();
 
-      // "Cross out" mode: keep the full contiguous page run and strike through
-      // the unselected scenes (one combined entry per version group).
+      // "Cross out" mode.
       if (sides.sceneDisplayMode === 'crossout') {
+        // ── Rearrange-aware crossout ─────────────────────────────────────
+        // When the user typed a sceneOrder, emit ONE chunk per scene in
+        // sceneOrder that belongs to this group. Each chunk renders only
+        // the pages containing that scene's content, with *all* user-
+        // selected scenes left clean (so co-located picks don't get
+        // crossed out inside another scene's chunk). The unified order
+        // pass in generateSidesPdf then interleaves these chunks
+        // according to sceneOrder.
+        const allUserSelected = new Set();
+        for (const g of versionGroups) (g.sceneNumbers || []).forEach(s => allUserSelected.add(normalizeSceneNumber(s)));
+        const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
+          ? sides.sceneOrder.map(normalizeSceneNumber).filter(sn => requested.has(sn))
+          : [];
+
+        if (orderedHere.length) {
+          // Dedup while preserving first-occurrence order.
+          const seenSn = new Set();
+          for (const sn of orderedHere) {
+            if (seenSn.has(sn)) continue;
+            seenSn.add(sn);
+            const chunk = await renderCrossoutImages(
+              pdfBuffer, pdfSceneMap, new Set([sn]), totalPages,
+              { allSelectedScenes: allUserSelected },
+            );
+            if (!chunk.length || !chunk[0].images.length) {
+              console.warn(`[sides:multi] crossout rearrange: no pages for scene ${sn} in ${label}`);
+              continue;
+            }
+            const key = `${gi}:crossout:${sn}`;
+            allScenes.push({
+              sceneNumber: sn,
+              heading: `Scene ${sn} (${label})`,
+              rawText: '',
+              sourceVersion: group.versionId,
+              sourceVersionLabel: label,
+              imageKey: key,
+            });
+            allSceneImages.push({ key, sceneNumber: sn, images: chunk[0].images });
+          }
+          continue;
+        }
+
+        // Default crossout (no rearrange): one combined chunk per group.
         const crossImages = await renderCrossoutImages(pdfBuffer, pdfSceneMap, requested, totalPages);
         if (!crossImages.length || !crossImages[0].images.length) {
           console.warn(`[sides:multi] crossout produced no pages for version ${label}`);
@@ -1815,4 +1934,136 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
   }
 }
 
-module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap };
+/**
+ * Diagnostic version of buildPdfSceneMap. Returns the same scene list AND
+ * a per-line dump showing: every text line per page, whether it matched
+ * the heading regex, the items breakdown (str + pdfX), and which detection
+ * strategy produced the scene number (or none). Used by the debug endpoint.
+ */
+async function debugPdfSceneMap(pdfBuffer) {
+  const pdfjs = await loadPdfjs();
+  const data = bufferToUint8(pdfBuffer);
+  const pdf = await pdfjs.getDocument({
+    data, disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
+  }).promise;
+
+  const HEADING_RE = /\b(?:INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+|\bSCENE\b/i;
+  const SCENE_NUM_RE = /^(\d+[A-Za-z]{0,3})\.?$/;
+
+  const pages = [];
+  let scenesFound = [];
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+
+    // Group items into lines by Y coordinate (same algorithm as buildPdfSceneMap).
+    const linesMap = [];
+    for (const it of tc.items) {
+      const str = (it.str || '').replace(/\s+/g, ' ');
+      if (!str.trim()) continue;
+      const pdfY = it.transform ? it.transform[5] : 0;
+      const pdfX = it.transform ? it.transform[4] : 0;
+      const h = it.height || 12;
+      let line = linesMap.find(l => Math.abs(l.pdfY - pdfY) < 4);
+      if (!line) {
+        line = { pdfY, items: [], maxHeight: h, text: '' };
+        linesMap.push(line);
+      }
+      line.items.push({ str: str.trim(), pdfX: Number(pdfX.toFixed(1)) });
+      if (h > line.maxHeight) line.maxHeight = h;
+    }
+    for (const l of linesMap) {
+      l.items.sort((a, b) => a.pdfX - b.pdfX);
+      l.text = l.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+    }
+    linesMap.sort((a, b) => b.pdfY - a.pdfY);
+
+    const pageW = viewport.width || 612;
+    const LEFT_MARGIN = pageW * 0.15;
+    const RIGHT_MARGIN = pageW * 0.70;
+
+    const pageDump = { page: p, pageWidth: pageW, leftMarginCutoff: LEFT_MARGIN, rightMarginCutoff: RIGHT_MARGIN, lines: [] };
+
+    for (const line of linesMap) {
+      const upper = line.text.toUpperCase();
+
+      const leftMarginItem = line.items.find(it => it.pdfX < LEFT_MARGIN && SCENE_NUM_RE.test(it.str));
+      const rightMarginItem = line.items.find(it => it.pdfX > RIGHT_MARGIN && SCENE_NUM_RE.test(it.str));
+      const leftMatch = leftMarginItem && leftMarginItem.str.match(SCENE_NUM_RE);
+      const rightMatch = rightMarginItem && rightMarginItem.str.match(SCENE_NUM_RE);
+      const marginPair = leftMatch && rightMatch && leftMatch[1].toUpperCase() === rightMatch[1].toUpperCase();
+      const matchesSlug = HEADING_RE.test(upper);
+      const matchesHeading = matchesSlug || marginPair;
+
+      const dump = {
+        text: line.text,
+        pdfY: Number(line.pdfY.toFixed(1)),
+        items: line.items,
+        matchesSlug,
+        marginPair,
+        matchesHeading,
+      };
+
+      if (matchesHeading) {
+        let num = null;
+        let detectedBy = null;
+
+        if (leftMatch) { num = leftMatch[1]; detectedBy = 'leftMargin'; }
+        if (!num && rightMatch) { num = rightMatch[1]; detectedBy = 'rightMargin'; }
+        if (!num) {
+          const leadingMatch = line.text.match(/^(\d+[A-Za-z]{0,3})\s+(?:INT|EXT|INT\/EXT|I\/E|SCENE)/i);
+          if (leadingMatch) { num = leadingMatch[1]; detectedBy = 'inlineLead'; }
+        }
+        if (!num) {
+          const lastItem = line.items[line.items.length - 1];
+          if (lastItem && SCENE_NUM_RE.test(lastItem.str)) {
+            const m = lastItem.str.match(SCENE_NUM_RE);
+            if (m) { num = m[1]; detectedBy = 'trailingItem'; }
+          }
+        }
+
+        if (num) num = num.toUpperCase().replace(/PT$/, '') || null;
+
+        dump.sceneNumber = num;
+        dump.detectedBy = detectedBy || 'none';
+        scenesFound.push({ page: p, sceneNumber: num, heading: line.text, detectedBy: detectedBy || 'none' });
+      }
+      pageDump.lines.push(dump);
+    }
+    pages.push(pageDump);
+    page.cleanup();
+  }
+  await pdf.cleanup();
+  await pdf.destroy();
+
+  const numbered = scenesFound.filter(s => s.sceneNumber);
+  const survivors = numbered.length > 0 ? numbered : scenesFound.map((s, i) => ({ ...s, sceneNumber: String(i + 1), detectedBy: 'autoNumber' }));
+  const dropped = numbered.length > 0 ? scenesFound.filter(s => !s.sceneNumber) : [];
+
+  // Detection-strategy counts (helps spot patterns at a glance).
+  const counts = scenesFound.reduce((acc, s) => {
+    const k = s.detectedBy || 'none';
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    summary: {
+      totalPages: pdf.numPages,
+      headingsDetected: scenesFound.length,
+      numbered: numbered.length,
+      droppedAsUnnumbered: dropped.length,
+      autoNumberedFallback: numbered.length === 0 && scenesFound.length > 0,
+      finalSceneCount: survivors.length,
+      detectionStrategies: counts,
+    },
+    headings: scenesFound,
+    dropped,
+    survivors,
+    pages, // every line on every page (verbose; useful for "why was X not detected as a heading?")
+  };
+}
+
+module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap, debugPdfSceneMap };

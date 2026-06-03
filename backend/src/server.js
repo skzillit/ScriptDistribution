@@ -63,6 +63,7 @@ app.use('/api/highlight', highlightRoutes);
 app.use('/api', sidesRoutes);
 app.use('/api', scheduleRoutes);
 app.use('/api', scenePagesRoutes);
+app.use('/api/debug', require('./routes/debug.routes'));
 
 // Local file serving (when USE_LOCAL_STORAGE=true)
 const { USE_LOCAL, LOCAL_STORAGE_DIR } = require('./services/storage.service');

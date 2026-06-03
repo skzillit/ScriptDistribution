@@ -227,6 +227,107 @@ function ScriptFoldersGroup({ script, isActive, folderScenePicks, wholeFolders, 
   );
 }
 
+/**
+ * Drag-and-drop chip row for rearranging the scene order. Backed by a single
+ * comma/space-separated string so it stays compatible with the existing
+ * `orderInput` text field (both UIs edit the same source of truth).
+ *
+ * - `value` — the current order string (e.g. "12, 9, 14A, 7").
+ * - `available` — every scene the user has selected. Any items missing from
+ *   `value` show as muted "Add" chips the user can click to append.
+ * - `onChange(nextString)` — fires whenever the order changes.
+ */
+export function DraggableSceneOrder({ value, available, onChange }) {
+  const parse = (s) => s.split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+  const ordered = React.useMemo(() => parse(value), [value]);
+  const [dragIdx, setDragIdx] = React.useState(null);
+  const [overIdx, setOverIdx] = React.useState(null);
+
+  const remaining = (available || []).filter(sn => !ordered.includes(sn));
+
+  const commit = (arr) => onChange(arr.join(', '));
+
+  const onDragStart = (i) => (e) => {
+    setDragIdx(i);
+    // Required for Firefox to actually start the drag.
+    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); } catch (_) {}
+  };
+  const onDragOver = (i) => (e) => {
+    e.preventDefault();
+    if (overIdx !== i) setOverIdx(i);
+  };
+  const onDrop = (i) => (e) => {
+    e.preventDefault();
+    if (dragIdx == null || dragIdx === i) { setDragIdx(null); setOverIdx(null); return; }
+    const next = ordered.slice();
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(i, 0, moved);
+    commit(next);
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+  const onDragEnd = () => { setDragIdx(null); setOverIdx(null); };
+  const removeAt = (i) => commit(ordered.filter((_, j) => j !== i));
+  const append = (sn) => commit([...ordered, sn]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{
+        display: 'flex', flexWrap: 'wrap', gap: '6px',
+        padding: '8px', borderRadius: '8px',
+        border: '1px dashed var(--border)', minHeight: '40px',
+        background: 'var(--bg-secondary)',
+      }}>
+        {ordered.length === 0 && (
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+            Drag chips to reorder — or use the text field below.
+          </span>
+        )}
+        {ordered.map((sn, i) => (
+          <span key={`${sn}-${i}`}
+            draggable
+            onDragStart={onDragStart(i)}
+            onDragOver={onDragOver(i)}
+            onDrop={onDrop(i)}
+            onDragEnd={onDragEnd}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
+              padding: '4px 10px', borderRadius: '999px', fontSize: '12px', fontWeight: '700',
+              background: dragIdx === i ? 'var(--accent-glow)' : 'var(--accent)',
+              color: dragIdx === i ? 'var(--accent)' : 'white',
+              border: overIdx === i && dragIdx !== i ? '2px dashed var(--accent)' : '2px solid transparent',
+              cursor: 'grab',
+              userSelect: 'none',
+              opacity: dragIdx === i ? 0.55 : 1,
+              transition: 'opacity .12s',
+            }}
+            title="Drag to reorder">
+            <span style={{ fontSize: '10px', opacity: 0.7 }}>{i + 1}.</span>
+            {sn}
+            <button type="button" onClick={(e) => { e.stopPropagation(); removeAt(i); }}
+              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '14px', lineHeight: 1, padding: 0 }}
+              title="Remove from order">×</button>
+          </span>
+        ))}
+      </div>
+      {remaining.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: '600', letterSpacing: '0.4px', textTransform: 'uppercase' }}>Add:</span>
+          {remaining.map(sn => (
+            <button key={sn} type="button" onClick={() => append(sn)}
+              style={{
+                padding: '3px 9px', borderRadius: '999px', fontSize: '11px', fontWeight: '600',
+                background: 'var(--bg-card)', color: 'var(--text-secondary)',
+                border: '1px dashed var(--border)', cursor: 'pointer',
+              }}
+              title="Add to order">+ {sn}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet, asPage }) {
   const [selectedCallSheet, setSelectedCallSheet] = useState(preSelectedCallSheet || '');
   const [selectedSchedule, setSelectedSchedule] = useState('');
@@ -755,10 +856,11 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet, asPage }
           </div>
         )}
 
-        {/* Scene order — only meaningful when scenes are HIDDEN (not crossed out).
-            In cross-out mode pages render in natural document order, so the
-            rearrange field would have no effect; we hide it to avoid confusion. */}
-        {multiMode && allSelectedScenes.length > 0 && sceneDisplayMode === 'hide' && (
+        {/* Scene order — applies to both modes:
+            - Hide: orders the selected scenes' clips.
+            - Cross out: reorders the page chunks for each selected scene;
+              non-selected scenes are still crossed out inside each chunk. */}
+        {multiMode && allSelectedScenes.length > 0 && (
           <div style={{ marginBottom: '12px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: rearrange ? '8px' : 0 }}>
               <input type="checkbox" checked={rearrange} onChange={e => enableRearrange(e.target.checked)} style={{ width: '15px', height: '15px', accentColor: 'var(--accent)' }} />
@@ -766,8 +868,14 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet, asPage }
             </label>
             {rearrange && (
               <>
-                <label style={L}>Scene order  (Write the scene no. to arrange the order)</label>
-                <input value={orderInput} onChange={e => setOrderInput(e.target.value)} placeholder="e.g. 12, 9, 14A, 7" />
+                <label style={L}>Scene order  (drag chips to reorder, or type below)</label>
+                <DraggableSceneOrder
+                  value={orderInput}
+                  available={allSelectedScenes}
+                  onChange={setOrderInput}
+                />
+                <input value={orderInput} onChange={e => setOrderInput(e.target.value)} placeholder="e.g. 12, 9, 14A, 7"
+                  style={{ marginTop: '8px' }} />
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
                   Sides will be ordered as: {orderInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean).join(', ') || '—'}
                 </div>
@@ -854,6 +962,13 @@ function GenerateSidesModal({ onClose, onSuccess, preSelectedCallSheet, asPage }
                     <button type="button" className="btn-secondary"
                       onClick={() => window.open(`${getApiBaseUrl()}/api/sides/${generated._id}/view`, '_blank')}>
                       View again
+                    </button>
+                    <button type="button" className="btn-secondary"
+                      onClick={() => sidesApi.download(generated._id).then(r => {
+                        const u = r.data.downloadUrl;
+                        window.location.href = u && u.startsWith('/') ? `${getApiBaseUrl()}${u}` : u;
+                      })}>
+                      Download
                     </button>
                     <button type="button" className="btn-secondary" disabled={working} onClick={handleMoveToDoc}>
                       Move to Doc Distribution
