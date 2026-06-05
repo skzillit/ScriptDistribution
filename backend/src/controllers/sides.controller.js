@@ -487,6 +487,7 @@ async function generateSides(req, res) {
       if (!f) continue;
       sceneFolders.push({
         scenePage: f._id,
+        script: f.script ? String(f.script._id || f.script) : null,
         sceneNumber: f.sceneNumber,
         sceneNumbers: Array.isArray(sel.sceneNumbers) ? sel.sceneNumbers.map(String) : [],
         color: f.color,
@@ -524,35 +525,56 @@ async function generateSides(req, res) {
   }
 
   // ── Cross-source scene-number dedup ────────────────────────────────────────
-  // A scene number must render from EXACTLY ONE source. Precedence:
-  //   1. Page folders (most explicit user pick) win over script versions.
-  //   2. Within versions / within folders, the first occurrence wins.
-  // This both prevents accidental duplicates (legacy state) and enforces the
-  // "pick a scene from only the source it was selected" rule.
+  // A scene number must render from EXACTLY ONE source PER SCRIPT. The same
+  // scene number is allowed across DIFFERENT scripts (different content with
+  // the same conventional numbering — confirmed by client).
+  //
+  // Precedence (within one script):
+  //   1. Page folders win over script versions.
+  //   2. Earlier folder / earlier version wins on ties.
   const normSN = (s) => String(s).trim().toUpperCase().replace(/PT$/, '');
   if (sceneFolders.length || versionGroups.length) {
-    const claimedByFolders = new Set();
-    const seenInFolders = new Set();
-    sceneFolders = sceneFolders.map(f => {
+    // Look up each folder's owning script — denormalize once.
+    const ScenePage = require('../models/ScenePage');
+    const folderScriptIds = await Promise.all(sceneFolders.map(async (f) => {
+      if (f.scenePage) {
+        const sp = await ScenePage.findById(f.scenePage).select('script');
+        return sp ? String(sp.script) : null;
+      }
+      return null;
+    }));
+    const claimedByFoldersPerScript = new Map();   // scriptId -> Set<sceneNumber>
+    const seenInFoldersPerScript = new Map();
+
+    sceneFolders = sceneFolders.map((f, i) => {
+      const sid = folderScriptIds[i] || String(scriptId);
+      const seen = seenInFoldersPerScript.get(sid) || new Set();
+      const claimed = claimedByFoldersPerScript.get(sid) || new Set();
       const kept = (f.sceneNumbers || []).filter(sn => {
         const k = normSN(sn);
-        if (seenInFolders.has(k)) return false;
-        seenInFolders.add(k);
-        claimedByFolders.add(k);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        claimed.add(k);
         return true;
       });
+      seenInFoldersPerScript.set(sid, seen);
+      claimedByFoldersPerScript.set(sid, claimed);
       return { ...f, sceneNumbers: kept };
     });
 
-    const seenInVersions = new Set();
+    const seenInVersionsPerScript = new Map();  // scriptId -> Set<sceneNumber>
     versionGroups = versionGroups.map(g => {
+      const sid = g.scriptId || String(scriptId);
+      const folderClaimed = claimedByFoldersPerScript.get(sid) || new Set();
+      const seen = seenInVersionsPerScript.get(sid) || new Set();
       const kept = (g.sceneNumbers || []).filter(sn => {
         const k = normSN(sn);
-        if (claimedByFolders.has(k)) return false;   // page already owns it
-        if (seenInVersions.has(k)) return false;      // earlier version owns it
-        seenInVersions.add(k);
+        if (folderClaimed.has(k)) return false;   // a page in THIS script owns it
+        if (seen.has(k)) return false;             // an earlier version of THIS script owns it
+        seen.add(k);
         return true;
       });
+      seenInVersionsPerScript.set(sid, seen);
       return { ...g, sceneNumbers: kept };
     }).filter(g => g.sceneNumbers.length > 0);
   }

@@ -10,6 +10,9 @@ const sidesSceneSchema = new mongoose.Schema({
   // Provenance — set only when sides are pulled from multiple script versions.
   sourceVersion: { type: mongoose.Schema.Types.ObjectId, ref: 'ScriptVersion' },
   sourceVersionLabel: String, // e.g. "v3" or "Blue Revision" — shown in the PDF
+  // Owning script id — required for multi-script generation so the combined-
+  // order pass can place units by the `scriptId:sceneNumber` composite token.
+  sourceScriptId: { type: mongoose.Schema.Types.ObjectId, ref: 'Script' },
   imageKey: String,           // unique key tying this scene to its rendered image group
 }, { _id: false });
 

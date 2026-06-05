@@ -981,8 +981,19 @@ async function extractSides(sidesId, versionId, sceneNumbers, options = {}) {
 
       // "Cross out" mode: keep full pages and strike through unselected scenes.
       if (sides.sceneDisplayMode === 'crossout') {
+        // sceneOrder may contain bare scene numbers OR composite tokens
+        // "scriptId:sceneNumber". For the single-version extractor we only
+        // own one script, so any composite token whose scriptId doesn't match
+        // is dropped.
+        const thisScriptId = String(sides.script || '');
         const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
-          ? sides.sceneOrder.map(normalizeSceneNumber).filter(sn => requestedScenes.has(sn))
+          ? sides.sceneOrder.map(tok => {
+              const t = String(tok || '');
+              if (!t.includes(':')) return normalizeSceneNumber(t);
+              const [sid, sn] = t.split(':');
+              if (thisScriptId && String(sid) !== thisScriptId) return null;
+              return normalizeSceneNumber(sn);
+            }).filter(sn => sn && requestedScenes.has(sn))
           : [];
 
         if (orderedHere.length) {
@@ -1290,20 +1301,57 @@ function generateSidesPdf(sides) {
     // Script scenes and pulled-in "Pages" are interleaved per the user's
     // rearrange order (sides.sceneOrder). Without an order, script scenes come
     // first (script order), then the page folders (selection order).
+    //
+    // Each unit carries TWO order-matching keys:
+    //   - sceneNumber : just the scene number, for legacy "12, 5, 14A" orders.
+    //   - composite   : "scriptId:sceneNumber" — used when the user picked
+    //                   scenes from multiple scripts (same number can repeat)
+    //                   and the order needs to disambiguate.
     let units = [
-      ...sides.scenes.map(s => ({ kind: 'scene', sceneNumber: normSceneNo(s.sceneNumber), data: s })),
+      ...sides.scenes.map(s => {
+        const sn = normSceneNo(s.sceneNumber);
+        // For script scenes, the owning script is the one in sourceVersion's
+        // group; the controller already denormalized it into versionScenes.
+        // Fall back to the sides' primary scriptId if not provided.
+        const sid = s.sourceScriptId
+          ? String(s.sourceScriptId)
+          : String(sides.script || '');
+        return { kind: 'scene', sceneNumber: sn, composite: `${sid}:${sn}`, data: s };
+      }),
       ...(Array.isArray(sides._folderImages)
-        ? sides._folderImages.map(f => ({ kind: 'folder', sceneNumber: normSceneNo(f.label), data: f }))
+        ? sides._folderImages.map(f => {
+            const sn = normSceneNo(f.label);
+            const sid = f.sourceScriptId ? String(f.sourceScriptId) : String(sides.script || '');
+            return { kind: 'folder', sceneNumber: sn, composite: `${sid}:${sn}`, data: f };
+          })
         : []),
     ];
 
     if (Array.isArray(sides.sceneOrder) && sides.sceneOrder.length) {
-      const rank = new Map();
-      sides.sceneOrder.forEach((sn, i) => { const k = normSceneNo(sn); if (!rank.has(k)) rank.set(k, i); });
-      const rankOf = (sn) => (rank.has(sn) ? rank.get(sn) : Number.MAX_SAFE_INTEGER);
+      // The order list may contain either bare scene numbers OR composite
+      // "scriptId:sceneNumber" tokens. Build TWO rank maps so a unit can match
+      // by composite first (precise) then by sceneNumber (fallback).
+      const compRank = new Map();
+      const snRank = new Map();
+      sides.sceneOrder.forEach((tok, i) => {
+        const s = String(tok || '').trim();
+        if (!s) return;
+        if (s.includes(':')) {
+          const k = s.split(':').map((p, j) => (j === 1 ? normSceneNo(p) : String(p).trim())).join(':');
+          if (!compRank.has(k)) compRank.set(k, i);
+        } else {
+          const k = normSceneNo(s);
+          if (!snRank.has(k)) snRank.set(k, i);
+        }
+      });
+      const rankOf = (u) => {
+        if (compRank.has(u.composite)) return compRank.get(u.composite);
+        if (snRank.has(u.sceneNumber)) return snRank.get(u.sceneNumber);
+        return Number.MAX_SAFE_INTEGER;
+      };
       units = units
         .map((u, i) => ({ u, i }))
-        .sort((a, b) => (rankOf(a.u.sceneNumber) - rankOf(b.u.sceneNumber)) || (a.i - b.i))
+        .sort((a, b) => (rankOf(a.u) - rankOf(b.u)) || (a.i - b.i))
         .map(x => x.u);
     }
 
@@ -1699,8 +1747,19 @@ async function attachFolderImages(sides) {
         // scenes the user did NOT pick (same visual as the script cross-out).
         if (sides.sceneDisplayMode === 'crossout') {
           const wantedSet = new Set(wanted.map(normalize));
+          // sceneOrder tokens may be composite "scriptId:sceneNumber". This
+          // folder is owned by `folder.script`; only honor tokens for THIS
+          // script (bare scene numbers are accepted for legacy / single-
+          // script orders).
+          const thisScriptId = String(folder.script || sides.script || '');
           const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
-            ? sides.sceneOrder.map(normalize).filter(sn => wantedSet.has(sn))
+            ? sides.sceneOrder.map(tok => {
+                const t = String(tok || '');
+                if (!t.includes(':')) return normalize(t);
+                const [sid, sn] = t.split(':');
+                if (thisScriptId && String(sid) !== thisScriptId) return null;
+                return normalize(sn);
+              }).filter(sn => sn && wantedSet.has(sn))
             : [];
 
           if (orderedHere.length) {
@@ -1722,6 +1781,7 @@ async function attachFolderImages(sides) {
               out.push({
                 label: sn,
                 color: folder.color,
+                sourceScriptId: folder.script,
                 description: produced ? '' : folder.description,
                 images: chunk[0].images,
               });
@@ -1737,6 +1797,7 @@ async function attachFolderImages(sides) {
             out.push({
               label: wanted.join(', '),
               color: folder.color,
+              sourceScriptId: folder.script,
               description: folder.description,
               images: crossImages[0].images,
             });
@@ -1753,6 +1814,7 @@ async function attachFolderImages(sides) {
             out.push({
               label: si.sceneNumber,
               color: folder.color,
+              sourceScriptId: folder.script,
               description: first ? folder.description : '',
               images: si.images,
             });
@@ -1768,6 +1830,7 @@ async function attachFolderImages(sides) {
       out.push({
         label: folder.sceneNumber,
         color: folder.color,
+        sourceScriptId: folder.script,
         description: folder.description,
         images,
       });
@@ -1838,8 +1901,19 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
         // according to sceneOrder.
         const allUserSelected = new Set();
         for (const g of versionGroups) (g.sceneNumbers || []).forEach(s => allUserSelected.add(normalizeSceneNumber(s)));
+        // sceneOrder may carry composite "scriptId:sceneNumber" tokens (multi-
+        // script picks). Project them to bare scene numbers, BUT keep only
+        // tokens whose script matches THIS group (so chunks aren't emitted in
+        // a group they don't belong to).
+        const thisScriptId = String(group.scriptId || '');
         const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
-          ? sides.sceneOrder.map(normalizeSceneNumber).filter(sn => requested.has(sn))
+          ? sides.sceneOrder.map(tok => {
+              const t = String(tok || '');
+              if (!t.includes(':')) return normalizeSceneNumber(t);
+              const [sid, sn] = t.split(':');
+              if (thisScriptId && String(sid) !== thisScriptId) return null;
+              return normalizeSceneNumber(sn);
+            }).filter(sn => sn && requested.has(sn))
           : [];
 
         if (orderedHere.length) {
@@ -1866,7 +1940,7 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
               sceneNumber: sn,
               heading: `Scene ${sn} (${label})`,
               rawText: '',
-              sourceVersion: group.versionId,
+              sourceVersion: group.versionId, sourceScriptId: group.scriptId,
               sourceVersionLabel: label,
               imageKey: key,
             });
@@ -1887,7 +1961,7 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
           sceneNumber: [...requested].join(', '),
           heading: `Scenes ${[...requested].join(', ')} (${label})`,
           rawText: '',
-          sourceVersion: group.versionId,
+          sourceVersion: group.versionId, sourceScriptId: group.scriptId,
           sourceVersionLabel: label,
           imageKey: key,
         });
@@ -1911,7 +1985,7 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
           rawText: '',
           pageStart: spec.startPage,
           pageEnd: spec.endPage,
-          sourceVersion: group.versionId,
+          sourceVersion: group.versionId, sourceScriptId: group.scriptId,
           sourceVersionLabel: label,
           imageKey: key,
         });
