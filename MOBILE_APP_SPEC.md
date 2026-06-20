@@ -33,6 +33,13 @@ If this spec is being used to **extend an existing implementation**, every item 
 | E19 | **FDX parser promotions** — paragraphs typed as Action whose text starts with `INT./EXT./SCENE` are treated as Scene Headings; inline leading numbers ("18 EXT. JUNGLE — DAY") are stripped and used as the scene number; `<DualDialogue>` wrappers are flattened so nested paragraphs aren't lost; empty scene headings still emit (numbering doesn't shift) | Appendix B |
 | E20 | **Margin-pair heading admission** — a line counts as a scene heading if it carries the **same scene number in both left and right margins**, even without an INT/EXT/SCENE keyword. Catches stylized headings like `INTERCUT: TV INSERT.`, `"TEN YEARS AGO"`, `- UNIVERSITY LECTURE HALL...` | Appendix B |
 | E21 | **Two debug endpoints** for scene-detection diagnostics: `/api/debug/versions/:id/scenes` and `/api/debug/pages/:id/scenes` — return the per-page line dump, detection strategy used, dropped/auto-numbered counts | Appendix C |
+| E22 | **Cross-out + Rearrange: no duplicate pages.** When two scenes in the rearrange order share a source page (e.g. Scene 1 ends and Scene 2A begins on the same script page), that page is rendered ONCE — attributed to the first scene in `sceneOrder` that needs it. Mobile clients just send the correct order; the server enforces uniqueness. | §10 |
+| E23 | **Global API loader (web).** A thin progress bar at the top of the viewport plus a small spinner pill in the top-right while any HTTP request or React Query mutation is in flight. The mobile equivalent: a thin determinate / shimmering bar above the tab content while ANY request issued by the central `APIClient` is in flight — see Appendix D for the in-flight counter spec. | §13 / Appendix D |
+| E24 | **Page scenes = Script scenes shape.** `/api/pages/:id/scenes` and `/api/versions/:id/scenes` now return identical objects: `{ sceneNumber, heading, intExt, location, timeOfDay, pageStart, pageEnd }`. Mobile clients can decode them with the same `SceneInfo` struct/class. | §5 / §8 |
+| E25 | **Multi-script picking in Generate Sides.** The user can pull scenes from MORE than one script in a single generation. The picker is a stacked list of script blocks with an "+ Add another script…" button. Each script's versions + Pages render in their own block. The output PDF interleaves scenes from all selected scripts according to `sceneOrder`. | §9.1 |
+| E26 | **Composite order tokens `scriptId:sceneNumber`.** `sceneOrder` accepts either a bare scene number (legacy single-script form) OR `"scriptId:sceneNumber"` (multi-script form, required when two scripts both have e.g. "Scene 12"). Server-side sort tries composite first, falls back to bare. | §5 / §9.1 |
+| E27 | **Per-script cross-source dedup.** Picking Scene 12 from a version of Script A blocks Scene 12 in a Page of Script A — but does NOT block Scene 12 in Script B (different content, same conventional number). Server-side dedup is also scoped per script (folders > versions, first-occurrence wins) within a single script. | §9.1 |
+| E28 | **`Script · Scene` chip labels.** In multi-script mode the rearrange chips read `<Script Title> · <Scene Number>`, the live "Sides will be ordered as: …" preview is translated to the same labels, and the raw text input is hidden (chips are the only edit surface). | §9.1 |
 
 The mobile apps **do not need to re-implement the PDF rendering** — every cross-out / rearrange / blank-page / header behavior is handled server-side and emitted as a single PDF. The mobile work is to **send the right payload** (correct `sceneDisplayMode`, `sceneOrder`, `versionScenes`, `pageSelections`) and **display the result** correctly.
 
@@ -410,10 +417,17 @@ id, sceneNumber: String, color: String (hex), description: String?,
 pageCount: Int?, pdfUrl: String?, createdAt: ISO8601
 ```
 
-### SceneInfo (returned by versionScenes / pageScenes)
+### SceneInfo (returned by versionScenes AND pageScenes — same shape, E24)
 ```
-sceneNumber: String, heading: String, pageStart: Int?
+sceneNumber: String,
+heading: String,
+intExt: String,     // "INT" / "EXT" / "INT/EXT" / "I/E" — "" if not detected
+location: String,   // "" if not detected
+timeOfDay: String,  // "DAY" / "NIGHT" / … — "" if not detected
+pageStart: Int,
+pageEnd: Int
 ```
+Both `/api/versions/:id/scenes` and `/api/pages/:id/scenes` return objects in this shape via the shared `flattenPdfSceneMap` server helper. Mobile clients use the same struct for both.
 
 ### Sides
 ```
@@ -425,18 +439,22 @@ createdAt: ISO8601, error: String?
 
 ### GenerateSidesRequest
 ```
-scriptId: String,
+scriptId: String,                          // PRIMARY script — first selected in multi-script mode (E25)
 title: String?,
 mode: String = "manual",
 publish: Bool = false,
 sceneDisplayMode: "hide" | "crossout",
-versionScenes: [ { versionId: String, sceneNumbers: [String] } ],
-pageSelections: [ { pageId: String, sceneNumbers: [String] } ],
+versionScenes: [ { versionId: String, sceneNumbers: [String] } ],   // versionIds can belong to MULTIPLE different scripts
+pageSelections: [ { pageId: String, sceneNumbers: [String] } ],     // pageIds can belong to MULTIPLE different scripts
 orderedScenes: Bool?,
-sceneOrder: [String]?,
-callSheetId: String? // Autogenerate flow only
-scheduleId: String? // Autogenerate flow only
+sceneOrder: [String]?,                     // Each token is either:
+                                           //   - a bare scene number ("12"), legacy single-script form, OR
+                                           //   - a composite token "scriptId:sceneNumber" (E26) — REQUIRED when
+                                           //     two scripts share a scene number; safe to use always.
+callSheetId: String?,                      // Autogenerate flow only
+scheduleId: String?                        // Autogenerate flow only
 ```
+**Server-side dedup is per-script (E27)** — page folders win over versions, first-occurrence within each, but only within a single script. Same scene number across scripts is allowed.
 
 ---
 
@@ -495,27 +513,33 @@ scheduleId: String? // Autogenerate flow only
 #### GenerateSidesScreen (full screen, **not** a modal, E2)
 - Mounted at its own route — on web `/sides/generate`; on mobile, a pushed destination on the Sides tab's nav stack. Back button (← Back to Sides) navigates back.
 - Sections, in order:
-  1. **Single-script picker (E3)** (dropdown / Picker). Lists every script the user owns, newest first. Each entry shows `<title>` + ` (no file — pages only)` suffix if no current version. Default selection = active script. **Only ONE script can be selected at a time**; switching the picker **clears all version picks, all page picks, the rearrange flag and the order input**.
-  2. **Pick scenes (versions)** — for the selected script only:
-     - Lists versions inside an expandable group.
-     - Each version is a collapsible card showing scene chips. Multi-select toggles each scene.
-     - "Select all" / "Clear" links.
-  3. **Pages** (scene folders) — for the selected script only:
-     - Lists scene folders as collapsible cards. Each shows colored swatch + sceneNumber + page count.
-     - On expand: chips of scenes detected in that Page's PDF, multi-select. If no scenes detected, show a single "Include whole PDF" checkbox instead.
-  4. **Summary row** — all selected scenes (union of version picks + page picks, deduped), shown as chips with the live count.
-  5. **Rearrange scene order (E7, E8)** — visible in **both** Hide and Cross-out modes. Uses the same draggable chip row as Autogenerate: drag to reorder, × to remove, "Add: +N" strip for unused selected scenes, text-input fallback. In Cross-out mode the order rearranges the **page chunks** for each selected scene (see §10).
+  1. **Multi-script picker (E25)** — a stacked list of script `<select>` rows, each backed by a single selected script. Each entry shows `<title>` + ` (no file — pages only)` suffix if no current version. Default = active script. Each non-default row has an **×** to remove that script. Underneath, a second dropdown labelled **"+ Add another script…"** lists every script the user owns but hasn't picked yet — selecting one appends another row. Removing a script clears every pick tied to it; the **first** row is the *primary* script and is the one sent as `scriptId` in the payload. (For native: use a `Picker` per row + an `+ Add another script…` button that opens an action sheet of remaining scripts on iOS, or a `Spinner` + `MaterialButton` on Android.)
+  2. **Pick scenes (versions)** — for **each** selected script, in the order it was added:
+     - Each script gets its own labelled group (`<Script Title>`), and inside, its versions are listed as expandable cards with scene chips. Multi-select toggles each scene.
+     - "Select all" / "Clear" links per version.
+  3. **Pages** (scene folders) — same per-script split. For each selected script, its scene folders render as expandable cards; expanding shows that page PDF's detected scenes (via the unified `SceneInfo` shape, E24). If no scenes detected, show a single "Include whole PDF" checkbox.
+  4. **Summary row** — all selected scenes (union of version picks + page picks across all scripts, deduped per script — see E27), shown as chips with the live count.
+  5. **Rearrange scene order (E7, E8, E25, E26, E28)** — visible in **both** Hide and Cross-out modes. Uses the draggable chip row from Autogenerate:
+     - Chip **label** displays `<Script Title> · <Scene Number>` (E28). The underlying **token** is `scriptId:sceneNumber` (E26).
+     - "Add: +N" strip surfaces unused selected scenes, also labelled `<Script Title> · <Scene Number>`.
+     - The text-input fallback is shown ONLY in single-script (legacy) mode. When the order contains any composite token, the raw text input is hidden — chips become the only edit surface.
+     - The live "Sides will be ordered as: …" preview translates each token through the same `Script · Scene` lookup as the chips.
+     - In Cross-out mode the order rearranges the **page chunks** for each selected scene (see §10).
   6. **Unselected scenes** — same radio options as Autogenerate.
   7. **Title** — optional.
   8. **Submit** → review stage (identical four-button stage as Autogenerate, §9.1).
 
-**Client-side cross-source dedup (E4, mandatory):**
-- Compute `claimedScenes = { scene numbers picked from ANY version OR any page }` (case-normalized, strip trailing `PT`).
-- In every picker (each version + each page folder), any scene chip whose number is in `claimedScenes` but not picked in the current source is shown **disabled**, 35 % opacity, with tooltip / accessible label `"Already picked from another source"`. Tapping does nothing.
-- "Select all" silently skips scenes claimed elsewhere and toasts `"Skipped scenes already picked from another source."`
+**Client-side cross-source dedup (E4, E27 — PER SCRIPT, mandatory):**
+- Compute `claimedScenes[scriptId] = { scene numbers picked from ANY version OR any page belonging to <scriptId> }` (case-normalized, strip trailing `PT`).
+- In every picker (each version + each page folder), the picker first resolves which script it belongs to (the parent script of its version / page), then checks `claimedScenes[ownerScriptId]`.
+- A scene chip whose number is in **its script's** claimed set but not picked in the current source is shown **disabled**, 35 % opacity, with tooltip / accessible label `"Already picked from another source"`. Tapping does nothing.
+- A scene chip whose number is claimed in **a different script** is NOT dimmed (multi-script duplicates are allowed by design — confirmed by client).
+- "Select all" silently skips scenes claimed elsewhere in the same script and toasts `"Skipped scenes already picked from another source."`
 - A user CAN toggle off a scene they already picked here.
 
-**Server-side cross-source dedup (E5)** runs again before extraction. Even if a duplicate slips through (e.g. legacy state), the server enforces "one scene number → one source", with **page folders winning** and **first-occurrence within each kind** winning on ties. Mobile clients can rely on this and don't need to deduplicate the request payload, but they should still apply the client-side dedup in the UI for feedback.
+Implementation hint: mobile clients should build a small registry as each version / page list loads — `versionId → scriptId` and `pageId → scriptId`. The registry is fed back into the picker so per-script dedup can resolve owners. (The web client does this with two `Map<id, scriptId>` state hooks; iOS/Android can do the same with `@Published` Maps or a `StateFlow<Map<...>>`.)
+
+**Server-side cross-source dedup (E5, E27)** runs again before extraction. Even if a duplicate slips through (e.g. legacy state), the server enforces "one scene number → one source PER SCRIPT", with **page folders winning** and **first-occurrence within each kind** winning on ties. Mobile clients can rely on this and don't need to deduplicate the request payload, but they should still apply the client-side dedup for UI feedback.
 
 **Important (E6):** **No** "Include call sheet in sides" / "Include schedule in sides" sections appear here. Those exist only in Autogenerate.
 
@@ -582,11 +606,18 @@ When the user submits **Generate Sides** or **Autogenerate Sides**, the server p
 - **Generous clearance above the next selected heading (E10)** — the grey rectangle and X stop ~22 px above the next heading's top edge, so the kept scene's heading text is never overlaid.
 - **Selected scenes stay clean** and unshaded.
 
-### 10.3 Cross-out + rearrange (E11)
+### 10.3 Cross-out + rearrange (E11, E22)
 When the user has both `sceneDisplayMode: "crossout"` and a non-empty `sceneOrder`, the server emits **one page-chunk per scene** in `sceneOrder` instead of a single contiguous run:
 - For each scene `N` in `sceneOrder`, only the pages where scene `N` has content are rendered.
 - Inside each chunk, **all user-picked scenes** (the full `versionScenes + pageSelections` union) are left clean — only scenes that are NOT in the user's selection are greyed/X'd. So if another picked scene happens to share a page with `N`, it stays readable inside `N`'s chunk.
-- The same scene may legitimately appear in multiple chunks if `sceneOrder` mentions it more than once (or if two ordered scenes overlap on a page).
+- **No duplicate pages (E22).** If two scenes in `sceneOrder` share a source page (e.g. Scene 1 ends and Scene 2A begins on the same script page), that page is rendered EXACTLY ONCE — credited to the first scene in `sceneOrder` that reaches it. Subsequent chunks skip pages already in the output.
+- The chunks themselves may still legitimately repeat across distinct *source pages* if a single scene was listed in `sceneOrder` more than once.
+
+### 10.3.1 Multi-script cross-out (E25)
+When the picker contains scenes from more than one script, each script's PDF is rendered independently:
+- Per-script chunks are computed in their own PDF. Scene 12 from Script A's chunk only crosses out unselected scenes within Script A's PDF; Scene 43 from Script B's chunk only crosses out unselected scenes within Script B's PDF. Scripts never merge their grey-out / X overlays.
+- `sceneOrder` tokens are composite (`scriptId:sceneNumber`, E26). The combined-order sort in `generateSidesPdf` honors them precisely, interleaving Script A and Script B chunks per the user's typed sequence.
+- The page-dedup rule (10.3) applies per script — Script A's pages dedup against Script A's earlier chunks; Script B's pages dedup against Script B's earlier chunks; the two scripts never collide because their page numbers live in different PDFs.
 
 ### 10.4 Trim rules (applied to every generated sides PDF)
 - **No "SIDES" / title running header** on any page.
@@ -700,6 +731,17 @@ The bracketed `[Ex]` tags map each scenario back to the enhancements in §0 — 
 20. **Server error (envelope)**: simulate (or force) `status: 0` from any endpoint — UI shows the envelope `message` verbatim, never crashes. **[E1]**
 21. **Debug endpoints (E21)** are wired up only as developer affordances; they shouldn't be exposed in the UI but the agent should hit `GET /api/debug/versions/:id/scenes` and `GET /api/debug/pages/:id/scenes` during development to verify the detection-strategy distribution before shipping any heading-related claims.
 22. **Force-quit and relaunch**: state restored; same `deviceId` is sent (auth still works).
+23. **Global API loader (E23)**: any GET / POST / multipart upload triggers a visible progress affordance (thin bar above the tab content + small spinner pill) while in flight; it auto-hides as soon as the request resolves; multiple overlapping requests do not flicker the indicator.
+24. **Page scenes shape (E24)**: open a Page in Generate Sides — its scene chips display `intExt`, `location`, `timeOfDay` on hover (iOS) / long-press (Android), matching what a script version's chips show. Pick chips and the resulting payload uses the same `SceneInfo` shape both surfaces decode.
+25. **Multi-script — basic (E25)**:
+    - Pick script *Test Script*, select Scene 12 and Scene 24.
+    - Tap **+ Add another script…**, pick *Test 2 Script*, select Scene 43 and Scene 7.
+    - Confirm: dedup does NOT dim Scene 12 in Test 2 Script even if it exists there (different content, same number, E27).
+    - Enable Rearrange — chips read `Test Script · 12`, `Test Script · 24`, `Test 2 Script · 43`, `Test 2 Script · 7` (E28). Drag into order `Test Script · 12`, `Test 2 Script · 43`, `Test 2 Script · 7`, `Test Script · 24`.
+    - Submit → review → View. The generated PDF has four scene chunks in exactly that order (E26).
+26. **Multi-script + cross-out (E25 + 10.3.1)**: same setup as above, choose `Cross out unselected scenes` → output keeps each script's unselected scenes greyed/X'd **within their own pages**; Script A pages never cross out Script B scenes.
+27. **Composite-token sort (E26 + E27 + Mongoose `sourceScriptId`)**: when both scripts have a "Scene 12" and the user picks both, the rearrange chips disambiguate (`Test Script · 12` vs `Test 2 Script · 12`); the output PDF renders both chunks distinctly and in the order the chips were dragged.
+28. **Page-dedup in cross-out + rearrange (E22)**: pick Scene 1 and Scene 2A from the same script, both share script page 1. Cross-out + rearrange the order as `1, 2A` → script page 1 appears exactly once in the output (credited to Scene 1's chunk), Scene 2A's chunk only emits pages beyond page 1.
 
 ---
 
@@ -837,3 +879,55 @@ Both require the standard auth headers. Response shape:
 ```
 
 The agent should hit one of these whenever heading detection seems off, and gate any code change against the `summary.detectionStrategies` distribution.
+
+---
+
+## Appendix D — Global API loader spec (E23)
+
+Mobile clients show progress whenever **any** HTTP request issued by the central `APIClient` is in flight — including queries, mutations, uploads, the generation-poll loop, and PDF signed-URL fetches. The web app does this with an axios in-flight counter; the mobile equivalents are below.
+
+### iOS (`Networking/APIClient.swift`)
+Add an `@MainActor` `APIBusyMonitor` class with `@Published var inFlight: Int = 0`. Every request bumps it on send, decrements it on response (success and failure). Inject the monitor into the SwiftUI environment in `ContentView` and render a `ProgressBar`-style top overlay when `inFlight > 0`.
+
+```swift
+@MainActor
+final class APIBusyMonitor: ObservableObject {
+    static let shared = APIBusyMonitor()
+    @Published private(set) var inFlight: Int = 0
+    func begin() { inFlight += 1 }
+    func end()   { inFlight = max(0, inFlight - 1) }
+}
+```
+In `APIClient.request<T>`:
+```swift
+await MainActor.run { APIBusyMonitor.shared.begin() }
+defer { Task { await MainActor.run { APIBusyMonitor.shared.end() } } }
+```
+Then in `ContentView`:
+```swift
+@StateObject private var busy = APIBusyMonitor.shared
+…
+.overlay(alignment: .top) {
+    if busy.inFlight > 0 { GlobalLoaderBar() }
+}
+```
+The `GlobalLoaderBar` is a 3 pt-tall gradient bar (`accent → accentSecondary`) with a 1.4 s shimmer animation, plus a small spinner "pill" in the top-right with `Loading…` (or `Working…` for mutations, if you want to distinguish).
+
+### Android (`data/network/ApiClient.kt`)
+Use a `MutableStateFlow<Int>` exposed by a singleton `ApiBusyMonitor`. The Ktor `HttpClient` config registers two hooks via `responsePipeline.intercept` and `sendPipeline.intercept` (or `Plugin` lifecycle): bump on `onSend`, decrement on `onResponse` (success and failure).
+
+```kotlin
+object ApiBusyMonitor {
+    private val _inFlight = MutableStateFlow(0)
+    val inFlight: StateFlow<Int> = _inFlight
+    fun begin() { _inFlight.update { it + 1 } }
+    fun end()   { _inFlight.update { (it - 1).coerceAtLeast(0) } }
+}
+```
+Then in `MainActivity`, expose a `<ProgressBar>` (indeterminate, horizontal, 3dp tall) at the top of the activity layout. A Fragment-level `LifecycleScope.launch` collects `ApiBusyMonitor.inFlight` and toggles its visibility.
+
+### Behavior contract (both platforms)
+- Indicator appears within 200 ms of any new request and disappears within 200 ms of the last in-flight resolving (no flicker for overlapping calls).
+- Indicator does NOT block input — it's purely visual.
+- The polling loop after `Submit` increments the counter on each `GET /sides/:id` and decrements on response; the indicator stays visible across the full poll window (which can be 60–90 s).
+- File uploads use the same counter — the indicator shows during upload too.

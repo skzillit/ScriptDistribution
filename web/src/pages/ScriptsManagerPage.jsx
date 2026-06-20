@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
-import { scriptsApi } from '../api/scripts.api';
+import { scriptsApi, manualScenesApi, sceneCandidatesApi } from '../api/scripts.api';
 import { getApiBaseUrl } from '../api/client';
 import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
@@ -78,6 +78,7 @@ function ScriptCardManager({ script, isEditor, onDelete, onChanged }) {
   const version = script.currentVersion;
   const [uploading, setUploading] = useState(false);
   const [viewing, setViewing] = useState(false);
+  const [managingScenes, setManagingScenes] = useState(false);
 
   const replace = async (file) => {
     setUploading(true);
@@ -110,8 +111,13 @@ function ScriptCardManager({ script, isEditor, onDelete, onChanged }) {
         {isEditor && (
           <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
             {version && (
-              <button className="btn-secondary" style={{ fontSize: '12px' }}
-                onClick={() => setViewing(true)}>View</button>
+              <>
+                <button className="btn-secondary" style={{ fontSize: '12px' }}
+                  onClick={() => setViewing(true)}>View</button>
+                <button className="btn-secondary" style={{ fontSize: '12px' }}
+                  title="Review auto-detected scenes and add any the system missed"
+                  onClick={() => setManagingScenes(true)}>Scenes</button>
+              </>
             )}
             <ReplaceButton uploading={uploading} hasVersion={!!version} onFile={replace} />
             <button style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '8px', color: '#e53935', fontSize: '12px', fontWeight: '600', cursor: 'pointer', padding: '6px 12px' }}
@@ -129,6 +135,16 @@ function ScriptCardManager({ script, isEditor, onDelete, onChanged }) {
           versionLabel={version.versionLabel || `v${version.versionNumber}`}
           versionId={version._id}
           onClose={() => setViewing(false)}
+        />
+      )}
+
+      {managingScenes && version && (
+        <ManageScenesModal
+          scriptTitle={script.title}
+          versionLabel={version.versionLabel || `v${version.versionNumber}`}
+          versionId={version._id}
+          pageCount={version.pageCount || null}
+          onClose={() => setManagingScenes(false)}
         />
       )}
     </div>
@@ -261,6 +277,341 @@ function AddScriptModal({ onClose, onSuccess }) {
             {saving ? 'Saving…' : 'Add Script'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Manage Scenes modal — view the auto-detected scene list for a script version
+ * and add / edit / delete manual scene markers for anything the auto-detector
+ * missed. Surfaces a side-by-side: scene list on the left, inline add/edit
+ * form on the right. Manual entries override auto entries with the same
+ * scene number.
+ */
+function ManageScenesModal({ scriptTitle, versionLabel, versionId, pageCount, onClose }) {
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['version-scenes', versionId],
+    queryFn: () => scriptsApi.getScenes(versionId).then(r => r.data),
+  });
+  const scenes = data?.scenes || [];
+
+  // Heading candidates — every line our detector saw, including the ones
+  // that didn't get a scene number. The user clicks one to pre-fill the
+  // "Add manual scene" form (the practical equivalent of "selecting" a
+  // line in the PDF without needing a custom canvas viewer).
+  const { data: candidatesData } = useQuery({
+    queryKey: ['scene-candidates', versionId],
+    queryFn: () => sceneCandidatesApi.list(versionId).then(r => r.data),
+    staleTime: 60 * 1000,
+  });
+  const candidates = candidatesData?.candidates || [];
+
+  // Signed URL to the raw script PDF — fetched once and embedded in the left
+  // pane so users can flip through the script while marking scenes.
+  const [pdfUrl, setPdfUrl] = useState(null);
+  const [pdfError, setPdfError] = useState(null);
+  React.useEffect(() => {
+    let alive = true;
+    scriptsApi.downloadVersion(versionId)
+      .then(r => {
+        if (!alive) return;
+        const u = r.data?.downloadUrl;
+        if (!u) { setPdfError('No PDF stored for this version'); return; }
+        setPdfUrl(u.startsWith('/') ? `${getApiBaseUrl()}${u}` : u);
+      })
+      .catch(e => alive && setPdfError(e.response?.data?.error || 'Failed to load PDF'));
+    return () => { alive = false; };
+  }, [versionId]);
+
+  // null = closed; {} = add-new form open; { ... } = edit existing
+  const [form, setForm] = useState(null);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['version-scenes', versionId] });
+
+  const autoCount = scenes.filter(s => s.source !== 'manual').length;
+  const manualCount = scenes.filter(s => s.source === 'manual').length;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '24px' }}
+      onClick={onClose}>
+      <div className="card" style={{ width: 'min(1400px, 100%)', height: '92vh', display: 'flex', flexDirection: 'column', boxShadow: 'var(--shadow-lg)' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h2 style={{ fontSize: '20px', fontWeight: '800', marginBottom: '2px' }}>Scenes — {scriptTitle}</h2>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              {versionLabel}{pageCount ? ` · ${pageCount} pages` : ''} · {autoCount} auto-detected{manualCount > 0 ? ` · ${manualCount} manual` : ''}
+            </div>
+          </div>
+          <button type="button" onClick={onClose}
+            style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', cursor: 'pointer' }}>Close</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: '14px', flex: 1, minHeight: 0 }}>
+          {/* LEFT — embedded PDF so the user can flip through the script
+              while marking scenes from it, plus a "Pick from script" panel
+              below it with every detected heading the user can click on. */}
+          <div style={{ flex: 1.4, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
+            <div style={{ flex: 1, border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden', background: '#525659', display: 'flex' }}>
+              {pdfError ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--error, #e53935)', fontSize: '12px', background: 'var(--bg-secondary)' }}>{pdfError}</div>
+              ) : !pdfUrl ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '12px', background: 'var(--bg-secondary)' }}>Loading PDF…</div>
+              ) : (
+                <iframe title="Script PDF" src={`${pdfUrl}#toolbar=1&navpanes=0&view=FitH`}
+                  style={{ flex: 1, width: '100%', border: 'none', background: 'white' }} />
+              )}
+            </div>
+            <SceneCandidatesPanel
+              candidates={candidates}
+              existing={scenes}
+              onPick={(c) => setForm({
+                sceneNumber: c.sceneNumber || '',
+                heading: c.heading || '',
+                pageStart: c.pageNumber,
+                pageEnd: c.pageNumber,
+              })}
+            />
+          </div>
+
+          {/* RIGHT — scenes table (+ inline add/edit form when active) */}
+          <div style={{ flex: 1, minWidth: '360px', display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button type="button" className="btn-primary" style={{ fontSize: '12px' }}
+                onClick={() => setForm({})}>+ Add scene manually</button>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                Use the PDF to find the page, then type it in.
+              </span>
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: '8px' }}>
+              {isLoading ? (
+                <div style={{ padding: '14px', fontSize: '12px', color: 'var(--text-muted)' }}>Loading scenes…</div>
+              ) : scenes.length === 0 ? (
+                <div style={{ padding: '14px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  No scenes were detected automatically. Add scenes manually to make them available in Generate Sides.
+                </div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-secondary)', textAlign: 'left' }}>
+                      <th style={{ padding: '8px 10px', fontWeight: '700', color: 'var(--text-secondary)', fontSize: '10px', textTransform: 'uppercase' }}>#</th>
+                      <th style={{ padding: '8px 10px', fontWeight: '700', color: 'var(--text-secondary)', fontSize: '10px', textTransform: 'uppercase' }}>Heading</th>
+                      <th style={{ padding: '8px 10px', fontWeight: '700', color: 'var(--text-secondary)', fontSize: '10px', textTransform: 'uppercase', textAlign: 'right' }}>Pg</th>
+                      <th style={{ padding: '8px 10px', fontWeight: '700', color: 'var(--text-secondary)', fontSize: '10px', textTransform: 'uppercase' }}>Src</th>
+                      <th style={{ padding: '8px 10px' }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scenes.map((s, i) => {
+                      const isManual = s.source === 'manual';
+                      return (
+                        <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+                          <td style={{ padding: '6px 10px', fontWeight: '700', color: 'var(--text-primary)' }}>{s.sceneNumber}</td>
+                          <td style={{ padding: '6px 10px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '180px' }}
+                            title={s.heading || ''}>{s.heading || ''}</td>
+                          <td style={{ padding: '6px 10px', color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            {s.pageStart || '—'}{s.pageEnd && s.pageEnd !== s.pageStart ? `–${s.pageEnd}` : ''}
+                          </td>
+                          <td style={{ padding: '6px 10px' }}>
+                            <span style={{
+                              display: 'inline-block', padding: '1px 6px', borderRadius: '999px', fontSize: '9px', fontWeight: '700', letterSpacing: '0.3px', textTransform: 'uppercase',
+                              background: isManual ? 'var(--accent-glow)' : 'var(--bg-secondary)',
+                              color: isManual ? 'var(--accent)' : 'var(--text-muted)',
+                            }}>{isManual ? 'manual' : 'auto'}</span>
+                          </td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            {isManual ? (
+                              <button type="button"
+                                onClick={() => setForm(s)}
+                                style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '11px', fontWeight: '600', cursor: 'pointer', padding: '2px 6px' }}>Edit</button>
+                            ) : (
+                              <button type="button"
+                                onClick={() => setForm({ sceneNumber: s.sceneNumber, heading: s.heading, pageStart: s.pageStart, pageEnd: s.pageEnd })}
+                                title="Replace this auto-detected entry with a manual override"
+                                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '11px', fontWeight: '600', cursor: 'pointer', padding: '2px 6px' }}>Override</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {form && (
+              <ManualSceneForm
+                versionId={versionId}
+                pageCount={pageCount}
+                existing={form.manualId ? form : null}
+                prefill={form.manualId ? null : form}
+                onClose={() => setForm(null)}
+                onSaved={() => { setForm(null); refresh(); }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Side-panel form inside ManageScenesModal — used both for "Add manual scene"
+ * and for "Override / Edit". Self-contained: handles validation, save, delete.
+ */
+function ManualSceneForm({ versionId, pageCount, existing, prefill, onClose, onSaved }) {
+  const isEdit = !!existing && !!existing.manualId;
+  const seed = existing || prefill || {};
+  const [sceneNumber, setSceneNumber] = useState(seed.sceneNumber || '');
+  const [heading, setHeading] = useState(seed.heading || '');
+  const [pageStart, setPageStart] = useState(seed.pageStart != null ? String(seed.pageStart) : '');
+  const [pageEnd, setPageEnd] = useState(seed.pageEnd != null && seed.pageEnd !== seed.pageStart ? String(seed.pageEnd) : '');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    const sn = sceneNumber.trim();
+    const hd = heading.trim();
+    const ps = Number(pageStart);
+    const pe = pageEnd.trim() === '' ? null : Number(pageEnd);
+    if (!sn) return toast.error('Scene number is required');
+    if (!hd) return toast.error('Heading is required');
+    if (!Number.isFinite(ps) || ps < 1) return toast.error('Start page must be a positive number');
+    if (pe != null && (!Number.isFinite(pe) || pe < ps)) return toast.error('End page must be ≥ start page');
+    if (pageCount && ps > pageCount) return toast.error(`Start page exceeds the script length (${pageCount} pages).`);
+    setSaving(true);
+    try {
+      const body = { sceneNumber: sn, heading: hd, pageStart: ps, pageEnd: pe };
+      if (isEdit) await manualScenesApi.update(existing.manualId, body);
+      else await manualScenesApi.create(versionId, body);
+      toast.success(isEdit ? 'Manual scene updated' : 'Manual scene added');
+      onSaved();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Failed to save manual scene');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!isEdit) return;
+    if (!window.confirm('Delete this manual scene?')) return;
+    setSaving(true);
+    try {
+      await manualScenesApi.remove(existing.manualId);
+      toast.success('Manual scene deleted');
+      onSaved();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Failed to delete');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const L = { fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px', fontWeight: '600', letterSpacing: '0.5px', textTransform: 'uppercase' };
+
+  return (
+    <div style={{ padding: '12px', border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <strong style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{isEdit ? 'Edit manual scene' : 'Add manual scene'}</strong>
+        <span style={{ flex: 1 }} />
+        <button type="button" onClick={onClose}
+          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '16px', lineHeight: 1, cursor: 'pointer' }}>×</button>
+      </div>
+      <div>
+        <label style={L}>Scene number</label>
+        <input value={sceneNumber} onChange={e => setSceneNumber(e.target.value)} placeholder="e.g. 73B" />
+      </div>
+      <div>
+        <label style={L}>Heading</label>
+        <input value={heading} onChange={e => setHeading(e.target.value)} placeholder='e.g. "Some Years Ago"' />
+      </div>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ flex: 1 }}>
+          <label style={L}>Start page</label>
+          <input type="number" min="1" value={pageStart} onChange={e => setPageStart(e.target.value)} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={L}>End page</label>
+          <input type="number" min="1" value={pageEnd} onChange={e => setPageEnd(e.target.value)} placeholder={pageStart || '—'} />
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
+        {isEdit && (
+          <button type="button" onClick={remove} disabled={saving}
+            style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 10px', color: '#e53935', fontSize: '11px', fontWeight: '600', cursor: 'pointer', marginRight: 'auto' }}>Delete</button>
+        )}
+        <button type="button" className="btn-secondary" style={{ fontSize: '12px' }} onClick={onClose}>Cancel</button>
+        <button className="btn-primary" style={{ fontSize: '12px', opacity: saving ? 0.5 : 1 }} disabled={saving} onClick={submit}>
+          {saving ? 'Saving…' : (isEdit ? 'Save' : 'Add')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Compact, scrollable list of every heading line the auto-detector noticed —
+ * including the unnumbered / stylized ones the post-pass would otherwise
+ * drop. The user clicks a row to pre-fill the "Add manual scene" form with
+ * the heading text and page number.
+ *
+ * Rows already represented in `existing` (auto OR manual) get a check mark
+ * but stay clickable (so the user can still use a candidate to override).
+ */
+function SceneCandidatesPanel({ candidates, existing, onPick }) {
+  const [query, setQuery] = React.useState('');
+  const existingHeadings = React.useMemo(() => {
+    const m = new Map();
+    for (const s of existing || []) {
+      m.set(`${(s.heading || '').toUpperCase().trim()}__${s.pageStart || ''}`, true);
+    }
+    return m;
+  }, [existing]);
+
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toUpperCase();
+    if (!q) return candidates;
+    return candidates.filter(c => (c.heading || '').toUpperCase().includes(q) || String(c.pageNumber).includes(q));
+  }, [candidates, query]);
+
+  return (
+    <div style={{ height: '200px', display: 'flex', flexDirection: 'column', gap: '6px', border: '1px solid var(--border)', borderRadius: '10px', padding: '8px', background: 'var(--bg-secondary)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <strong style={{ fontSize: '12px', color: 'var(--text-primary)' }}>Pick from script</strong>
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{candidates.length} heading{candidates.length === 1 ? '' : 's'} detected — click any to pre-fill the form.</span>
+        <span style={{ flex: 1 }} />
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Filter…"
+          style={{ width: '160px', padding: '4px 8px', fontSize: '11px' }} />
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-card)' }}>
+        {candidates.length === 0 ? (
+          <div style={{ padding: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>No heading candidates detected.</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>No matches.</div>
+        ) : (
+          filtered.map((c, i) => {
+            const used = existingHeadings.has(`${(c.heading || '').toUpperCase().trim()}__${c.pageNumber || ''}`);
+            return (
+              <button key={i} type="button" onClick={() => onPick(c)}
+                title="Pre-fill the manual-scene form with this heading"
+                style={{
+                  display: 'flex', width: '100%', alignItems: 'center', gap: '8px',
+                  padding: '5px 10px', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left',
+                  borderTop: i === 0 ? 'none' : '1px solid var(--border)',
+                  fontSize: '11px', color: 'var(--text-primary)',
+                }}>
+                <span style={{ fontWeight: '700', minWidth: '28px', color: c.sceneNumber ? 'var(--accent)' : 'var(--text-muted)' }}>
+                  {c.sceneNumber || '—'}
+                </span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.heading || '(empty)'}</span>
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>p{c.pageNumber}</span>
+                {used && <span title="Already in the scenes list" style={{ fontSize: '11px', color: 'var(--success, #4caf50)' }}>✓</span>}
+              </button>
+            );
+          })
+        )}
       </div>
     </div>
   );

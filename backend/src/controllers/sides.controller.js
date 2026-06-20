@@ -1482,17 +1482,128 @@ async function getScriptScenes(req, res) {
   const { buildPdfSceneMap, flattenPdfSceneMap } = require('../services/sides.service');
   const { getFileBuffer, getScriptPdfKey } = require('../services/storage.service');
 
+  // Manual scenes the user has added against this version — these MERGE with
+  // the auto-detected list, OVERRIDING the auto entry when scene numbers match.
+  const ManualScene = require('../models/ManualScene');
+  const manualScenes = await ManualScene.find({ scriptVersion: versionId }).lean();
+
+  const mergeScenes = (autoScenes) => {
+    const norm = (s) => String(s || '').trim().toUpperCase().replace(/PT$/, '');
+    const manualBySN = new Map();
+    for (const m of manualScenes) manualBySN.set(norm(m.sceneNumber), m);
+
+    // Auto entries; if a manual scene shadows the same number, the manual one wins.
+    const out = [];
+    const consumed = new Set();
+    for (const s of autoScenes) {
+      const key = norm(s.sceneNumber);
+      if (manualBySN.has(key)) {
+        const m = manualBySN.get(key);
+        out.push({
+          sceneNumber: m.sceneNumber,
+          heading: m.heading,
+          intExt: '', location: '', timeOfDay: '',
+          pageStart: m.pageStart,
+          pageEnd: m.pageEnd || m.pageStart,
+          source: 'manual',
+          manualId: String(m._id),
+        });
+        consumed.add(key);
+      } else {
+        out.push({ ...s, source: 'auto' });
+      }
+    }
+    // Any manual scenes whose number didn't match an auto entry — append in
+    // pageStart order so they slot into a sensible spot.
+    const extras = [];
+    for (const m of manualScenes) {
+      const key = norm(m.sceneNumber);
+      if (consumed.has(key)) continue;
+      extras.push({
+        sceneNumber: m.sceneNumber,
+        heading: m.heading,
+        intExt: '', location: '', timeOfDay: '',
+        pageStart: m.pageStart,
+        pageEnd: m.pageEnd || m.pageStart,
+        source: 'manual',
+        manualId: String(m._id),
+      });
+    }
+    // Natural comparator: "5" < "5A" < "6" < "10" < "10B".
+    const compareSceneNumber = (a, b) => {
+      const sa = String(a == null ? '' : a).toUpperCase().replace(/PT$/, '').trim();
+      const sb = String(b == null ? '' : b).toUpperCase().replace(/PT$/, '').trim();
+      const ma = sa.match(/^(\d+)([A-Z]*)$/);
+      const mb = sb.match(/^(\d+)([A-Z]*)$/);
+      if (ma && mb) {
+        const na = parseInt(ma[1], 10);
+        const nb = parseInt(mb[1], 10);
+        if (na !== nb) return na - nb;
+        return ma[2].localeCompare(mb[2]);
+      }
+      if (ma && !mb) return -1;       // numeric numbers ahead of non-numeric
+      if (!ma && mb) return 1;
+      return sa.localeCompare(sb);    // both non-numeric → alphabetical
+    };
+
+    // Combine auto + extras (manuals whose number doesn't shadow an auto entry)
+    // and sort the WHOLE list by scene number so manual entries slot into the
+    // right place numerically (e.g. "5B" between "5" and "6").
+    return [...out, ...extras].sort((a, b) => compareSceneNumber(a.sceneNumber, b.sceneNumber));
+  };
+
   try {
     const script = await Script.findById(version.script);
     const pdfBuffer = await getFileBuffer(getScriptPdfKey(script._id, versionId));
     const pdfSceneMap = await buildPdfSceneMap(pdfBuffer);
-    const scenes = flattenPdfSceneMap(pdfSceneMap);
+    const autoScenes = flattenPdfSceneMap(pdfSceneMap);
+    const scenes = mergeScenes(autoScenes);
     res.json({ versionId, totalScenes: scenes.length, scenes });
   } catch (err) {
-    // The script PDF couldn't be read (e.g. missing from storage). Return no
-    // scenes rather than misleading page labels ("P1", "P2", …).
+    // The script PDF couldn't be read (e.g. missing from storage). Still
+    // surface any manual scenes the user added so they can keep working.
     console.error('getScriptScenes PDF-based detection failed:', err.message);
-    res.json({ versionId, totalScenes: 0, scenes: [], error: 'Could not read the script PDF for this version.' });
+    const scenes = mergeScenes([]);
+    res.json({ versionId, totalScenes: scenes.length, scenes, error: 'Could not read the script PDF for this version.' });
+  }
+}
+
+/**
+ * GET /versions/:versionId/scene-candidates
+ *
+ * Returns EVERY line in the script PDF that our detector recognized as a
+ * potential scene heading — the slug-matched ones, the margin-paired ones,
+ * the stylized ones (INTERCUT / TITLE / "Some Years Ago" / etc.). This is
+ * the raw admission list, BEFORE the "drop unnumbered when something is
+ * numbered" post-pass. The UI uses it as a "Pick from script" list so the
+ * user can click a heading and the form pre-fills.
+ */
+async function getSceneCandidates(req, res) {
+  const { versionId } = req.params;
+  const version = await ScriptVersion.findById(versionId);
+  if (!version) return res.status(404).json({ error: 'Version not found' });
+
+  const { debugPdfSceneMap } = require('../services/sides.service');
+  const { getFileBuffer, getScriptPdfKey } = require('../services/storage.service');
+
+  try {
+    const script = await Script.findById(version.script);
+    const pdfBuffer = await getFileBuffer(getScriptPdfKey(script._id, versionId));
+    const dump = await debugPdfSceneMap(pdfBuffer);
+    // Project the verbose debug dump down to what the UI needs.
+    const candidates = (dump.headings || []).map(h => ({
+      heading: String(h.heading || '').trim(),
+      pageNumber: h.page,
+      sceneNumber: h.sceneNumber || null,
+      detectedBy: h.detectedBy || 'none',
+    }));
+    res.json({
+      versionId, totalPages: dump.summary?.totalPages || version.pageCount || 0,
+      totalCandidates: candidates.length, candidates,
+    });
+  } catch (err) {
+    console.error('getSceneCandidates failed:', err.message);
+    res.json({ versionId, totalPages: 0, totalCandidates: 0, candidates: [], error: 'Could not read the script PDF for this version.' });
   }
 }
 
@@ -1501,5 +1612,5 @@ module.exports = {
   viewCallSheetHtml, downloadCallSheet,
   generateSides, listSides, getSides, downloadSides, deleteSides, getSidesHtml,
   publishSides, moveSidesToDocDistribution,
-  getScriptScenes,
+  getScriptScenes, getSceneCandidates,
 };

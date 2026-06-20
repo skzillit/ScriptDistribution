@@ -26,6 +26,17 @@ export const scriptsApi = {
 };
 
 // Scene "folders" (Pages) attached to a script.
+export const sceneCandidatesApi = {
+  list: (versionId) => client.get(`/versions/${versionId}/scene-candidates`),
+};
+
+export const manualScenesApi = {
+  list: (versionId) => client.get(`/versions/${versionId}/manual-scenes`),
+  create: (versionId, body) => client.post(`/versions/${versionId}/manual-scenes`, body),
+  update: (id, body) => client.put(`/manual-scenes/${id}`, body),
+  remove: (id) => client.delete(`/manual-scenes/${id}`),
+};
+
 export const scenePagesApi = {
   list: (scriptId) => client.get(`/scripts/${scriptId}/pages`),
   create: (scriptId, formData, onProgress) =>

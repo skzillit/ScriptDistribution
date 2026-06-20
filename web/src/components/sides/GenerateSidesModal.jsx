@@ -35,7 +35,9 @@ function VersionScenePicker({ version, isCurrent, picked, claimed, onToggleScene
           {isLoading ? (
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>Loading scenes…</div>
           ) : scenes.length === 0 ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>No scenes detected.</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>
+              No scenes detected. Add or edit scenes from the <strong>Script</strong> page → Scenes button.
+            </div>
           ) : (
             <>
               <div style={{ display: 'flex', gap: '10px', marginBottom: '6px' }}>
@@ -48,9 +50,10 @@ function VersionScenePicker({ version, isCurrent, picked, claimed, onToggleScene
                 {scenes.map((s, i) => {
                   const on = pickedSet.has(s.sceneNumber);
                   const blocked = !on && claimed && claimed.has(String(s.sceneNumber));
+                  const isManual = s.source === 'manual';
                   return (
                     <button key={i} type="button" disabled={blocked}
-                      title={blocked ? 'Already picked from another source' : (s.heading || '')}
+                      title={blocked ? 'Already picked from another source' : (isManual ? `Manual scene — ${s.heading || ''}` : (s.heading || ''))}
                       onClick={() => onToggleScene(s.sceneNumber)}
                       style={{
                         padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
@@ -58,10 +61,10 @@ function VersionScenePicker({ version, isCurrent, picked, claimed, onToggleScene
                         border: '1px solid', transition: 'all .12s',
                         background: on ? 'var(--accent)' : 'var(--bg-card)',
                         color: on ? 'white' : 'var(--text-secondary)',
-                        borderColor: on ? 'var(--accent)' : 'var(--border)',
+                        borderColor: on ? 'var(--accent)' : (isManual ? 'var(--accent-secondary)' : 'var(--border)'),
                         opacity: blocked ? 0.35 : 1,
                       }}>
-                      {s.sceneNumber}
+                      {s.sceneNumber}{isManual ? ' ·m' : ''}
                     </button>
                   );
                 })}

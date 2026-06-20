@@ -16,6 +16,7 @@ router.get('/callsheets/:id/download', moduleAuth, ctrl.downloadCallSheet);
 
 // Scene extraction from script
 router.get('/versions/:versionId/scenes', moduleAuth, ctrl.getScriptScenes);
+router.get('/versions/:versionId/scene-candidates', moduleAuth, ctrl.getSceneCandidates);
 
 // Sides — editors/admins can generate/delete, viewers can view/download
 router.post('/sides', moduleAuth, requireRole('admin', 'editor'), ctrl.generateSides);

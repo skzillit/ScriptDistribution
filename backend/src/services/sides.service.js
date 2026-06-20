@@ -63,6 +63,16 @@ async function buildPdfSceneMap(pdfBuffer) {
 
   // Standard slugs (INT./EXT./I/E) OR bare "SCENE 33" style headings.
   const HEADING_RE = /\b(?:INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+|\bSCENE\b/i;
+  // Stylized scene-transition keywords at the START of the line. Catches
+  // scripts that use non-INT/EXT headings — `INTERCUT: TV INSERT.`,
+  // `TITLE: THE JOY OF SEX`, `INSERT - ...`, `FLASHBACK`, `MONTAGE`,
+  // `BACK IN JANE'S BEDROOM`, `MEANWHILE`, `ACT TWO`, `FADE IN`, etc.
+  const STYLIZED_HEADING_RE = /^\s*(?:INTERCUT|INSERT|FLASHBACK|END\s+FLASHBACK|MONTAGE|TITLE|BACK\s+(?:TO|IN)|SUPER|END\s+OF\s+(?:ACT|EPISODE)|ACT\s+(?:ONE|TWO|THREE|FOUR|FIVE|SIX|\d+)|FADE\s+(?:IN|OUT|TO)|MEANWHILE|LATER|TIME\s+CUT|JUMP\s+CUT)\b/i;
+  // A whole-line quoted title — e.g. `"Some Years Ago"`, `"TEN YEARS AGO"`.
+  // Restricted to short, single-phrase lines so we don't accidentally grab
+  // dialogue lines that happen to start and end with quote marks. Accepts
+  // straight and smart quotes on either end.
+  const QUOTED_TITLE_RE = /^\s*[""''][^""''\n]{2,60}[""''][.,!?\s]*$/;
   const SCENE_NUM_RE = /^(\d+[A-Za-z]{0,3})\.?$/;   // pure scene-number token
   const scenes = [];
   const totalPages = pdf.numPages;
@@ -71,6 +81,21 @@ async function buildPdfSceneMap(pdfBuffer) {
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale: 1 });
     const tc = await page.getTextContent();
+
+    // Build a per-fontName "is bold" lookup from pdf.js's reported styles.
+    // PostScript font names that include `bold`, `bd`, `black`, `heavy`, `demi`
+    // (or weight suffixes like `-700`/`-800`) reliably indicate boldness, which
+    // screenplay PDFs use to mark scene headings.
+    const boldFonts = new Set();
+    if (tc.styles) {
+      for (const [fontName, style] of Object.entries(tc.styles)) {
+        const fam = String(style.fontFamily || '').toLowerCase();
+        if (/(?:^|[-_ ])(bold|bd|black|heavy|demi|semibold|extrabold|ultrabold|700|800|900)(?:$|[-_ ])/.test(fam)
+          || /bold/.test(fam)) {
+          boldFonts.add(fontName);
+        }
+      }
+    }
 
     // Group items into lines by PDF-space Y (bottom-up). Keep whitespace items
     // and raw strings — some PDFs emit text glyph-by-glyph (e.g. "I","N","T")
@@ -87,7 +112,7 @@ async function buildPdfSceneMap(pdfBuffer) {
         line = { pdfY, items: [], maxHeight: h, text: '' };
         linesMap.push(line);
       }
-      line.items.push({ str: it.str, pdfX, pdfW: w });
+      line.items.push({ str: it.str, pdfX, pdfW: w, isBold: boldFonts.has(it.fontName) });
       if (h > line.maxHeight) line.maxHeight = h;
     }
     for (const l of linesMap) {
@@ -113,6 +138,15 @@ async function buildPdfSceneMap(pdfBuffer) {
       l.text = text.replace(/\s+/g, ' ').trim();
       // Trimmed token list for margin scene-number detection.
       l.items = l.items.map(i => ({ ...i, str: i.str.trim() })).filter(i => i.str);
+
+      // Line-level boldness: a line is "all bold" when EVERY non-marginal,
+      // non-numeric item uses a bold font. Margin-only scene numbers can be
+      // bold or not — we don't count them. Track the leftmost real-text X
+      // so we can require headings to be LEFT-ALIGNED (not centered
+      // character names).
+      const meaningful = l.items.filter(it => !SCENE_NUM_RE.test(it.str));
+      l.allBold = meaningful.length > 0 && meaningful.every(it => it.isBold);
+      l.leftEdge = meaningful.length > 0 ? Math.min(...meaningful.map(it => it.pdfX)) : Infinity;
     }
     linesMap.sort((a, b) => b.pdfY - a.pdfY); // top→bottom
 
@@ -120,6 +154,10 @@ async function buildPdfSceneMap(pdfBuffer) {
     const pageW = viewport.width || 612;
     const LEFT_MARGIN = pageW * 0.15;   // left 15% = left margin zone
     const RIGHT_MARGIN = pageW * 0.70;  // beyond 70% = right margin zone
+    // Anything starting inside the left ~30% of the page is "left-aligned"
+    // by screenplay convention. Character names and titles usually sit
+    // farther right (centered around 50-60% of page width).
+    const HEADING_X_LIMIT = pageW * 0.30;
 
     for (const line of linesMap) {
       const upper = line.text.toUpperCase();
@@ -134,32 +172,47 @@ async function buildPdfSceneMap(pdfBuffer) {
       const marginPair = leftMatch && rightMatch
         && leftMatch[1].toUpperCase() === rightMatch[1].toUpperCase();
 
-      // Admit a line as a heading if it matches a slug (INT./EXT./I/E./SCENE)
-      // OR it carries the same scene number in BOTH left and right margins —
-      // a convention used by stylized headings like:
-      //   2A   INTERCUT: TV INSERT.            2A
-      //   4    "TEN YEARS AGO"                  4
-      //   7    - UNIVERSITY LECTURE HALL...     7
-      // Plain body text never has matching digit tokens at both margins.
-      if (!HEADING_RE.test(upper) && !marginPair) continue;
+      // Admit a line as a heading if ANY of:
+      //   (a) it matches a slug regex (INT./EXT./I/E./SCENE), OR
+      //   (b) it carries the same scene number in BOTH left and right margins
+      //       — a convention used by stylized headings like
+      //         `2A   INTERCUT: TV INSERT.   2A`, OR
+      //   (c) it begins with a stylized-transition keyword
+      //       (INTERCUT, TITLE, INSERT, FLASHBACK, MONTAGE, BACK IN, BACK TO,
+      //        ACT TWO, FADE IN, MEANWHILE, …) — catches unnumbered scripts
+      //       like the "JOY OF SEX JUNE 26" version where these headings
+      //       have neither slug nor margin number, OR
+      //   (d) the entire line is a quoted title — e.g. `"Some Years Ago"`.
+      const matchesSlug = HEADING_RE.test(upper);
+      const matchesStylized = STYLIZED_HEADING_RE.test(line.text);
+      const matchesQuoted = QUOTED_TITLE_RE.test(line.text);
+      // Any bold sentence is admitted as a heading candidate. We INTENTIONALLY
+      // accept centered bold lines (character names like `ALEX`, `JOHNNY
+      // CARSON`, transitions like `CUT TO:`) so the picker errs on the side
+      // of including everything — the user can deselect noise in Generate
+      // Sides or skip it from the Scenes modal. The length cap blocks bolded
+      // body sentences from being misread as scene headings.
+      const matchesBold = line.allBold
+        && line.text.length >= 2 && line.text.length <= 120;
+      if (!matchesSlug && !marginPair && !matchesStylized && !matchesQuoted && !matchesBold) continue;
 
       let num = null;
 
-      // 1) Left-margin number
+      // 1) Left-margin number (always trusted — physical placement is unambiguous)
       if (leftMatch) num = leftMatch[1];
-      // 2) Right-margin number
+      // 2) Right-margin number (same trust as left)
       if (!num && rightMatch) num = rightMatch[1];
 
-      // Fallback: text-level leading (only if leading is BEFORE any INT./EXT. and is followed
-      // by whitespace, meaning it's clearly a scene number not part of the heading text)
-      if (!num) {
+      // Inline-leading and trailing-digit fallbacks are SLUG-ONLY. Stylized
+      // and quoted headings often legitimately contain digits in their text
+      // (e.g. `TITLE: 1972`, `"TEN YEARS AGO"`, `INSERT - PAGE 42`) — letting
+      // those become phantom scene numbers triggers the "drop unnumbered"
+      // post-pass and discards every real INT/EXT heading.
+      if (!num && matchesSlug) {
         const leadingMatch = line.text.match(/^(\d+[A-Za-z]{0,3})\s+(?:INT|EXT|INT\/EXT|I\/E|SCENE)/i);
         if (leadingMatch) num = leadingMatch[1];
       }
-
-      // Fallback: trailing digit-only item at end of line (any X position), but require
-      // it to be separated by whitespace from the heading text (not concatenated)
-      if (!num) {
+      if (!num && matchesSlug) {
         const lastItem = line.items[line.items.length - 1];
         if (lastItem && SCENE_NUM_RE.test(lastItem.str)) {
           const m = lastItem.str.match(SCENE_NUM_RE);
@@ -443,10 +496,28 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
   }
 
   const selectedBlocks = blocks.filter(b => b.selected);
-  if (!selectedBlocks.length) return [];
+  // `forceRange` lets manual scenes (which have NO entry in pdfSceneMap)
+  // drive the page range directly via their pageStart/pageEnd. The grey/X
+  // overlay still respects `allSelectedScenes` against the auto-detected
+  // blocks so other scenes on the same page get crossed out properly.
+  const forceRange = options.forceRange && Number.isFinite(options.forceRange.startPage)
+    ? {
+        startPage: Math.max(1, Math.min(options.forceRange.startPage, totalPages)),
+        endPage: Math.max(
+          Math.max(1, Math.min(options.forceRange.startPage, totalPages)),
+          Math.min(options.forceRange.endPage || options.forceRange.startPage, totalPages),
+        ),
+      }
+    : null;
 
-  const startPage = Math.max(1, Math.min(...selectedBlocks.map(b => b.startPage)));
-  const endPage = Math.min(totalPages, Math.max(...selectedBlocks.map(b => b.endPage)));
+  if (!selectedBlocks.length && !forceRange) return [];
+
+  const startPage = forceRange
+    ? forceRange.startPage
+    : Math.max(1, Math.min(...selectedBlocks.map(b => b.startPage)));
+  const endPage = forceRange
+    ? forceRange.endPage
+    : Math.min(totalPages, Math.max(...selectedBlocks.map(b => b.endPage)));
 
   const data = bufferToUint8(pdfBuffer);
   const pdf = await pdfjs.getDocument({
@@ -479,7 +550,10 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
         bottom = Math.min(H, bottom);
         if (bottom > top) selectedHeightOnPage += (bottom - top);
       }
-      if (selectedHeightOnPage < MIN_SELECTED_PX) { page.cleanup(); continue; }
+      // For forced ranges (manual scenes), the user has already explicitly
+      // marked pageStart..pageEnd as the scene's content — skip the
+      // "is there enough selected content?" guard.
+      if (!forceRange && selectedHeightOnPage < MIN_SELECTED_PX) { page.cleanup(); continue; }
 
       // Render the full page.
       const canvas = createCanvas(W, H);
@@ -544,7 +618,11 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
 
   await pdf.cleanup();
   await pdf.destroy();
-  return [{ sceneNumber: selectedBlocks[0].sceneNumber, images, pageNumbers }];
+  return [{
+    sceneNumber: selectedBlocks[0]?.sceneNumber || '__manual__',
+    images,
+    pageNumbers,
+  }];
 }
 
 /**
@@ -1688,6 +1766,76 @@ async function attachScheduleImages(sides) {
 }
 
 /** Render every page of a (small) PDF buffer to PNG image buffers at 2x. */
+/**
+ * Locate a user-typed heading string inside a PDF and return its Y position.
+ * Used to upgrade manual scenes from "page range" entries into first-class
+ * blocks with real pdfY coordinates — so cross-out and hide-mode crops can
+ * treat them like auto-detected scenes.
+ *
+ * Returns { pageNumber, pdfY, fontHeightPdf, heading } on match, or null.
+ * Matching is normalized (uppercase, whitespace collapsed) and accepts the
+ * line either CONTAINING the heading or being CONTAINED BY it (so an
+ * `INT. KITCHEN – DAY` line still matches a user's `INT. KITCHEN - DAY`).
+ */
+async function locateHeadingInPdf(pdfBuffer, headingText, fromPage, toPage) {
+  const target = String(headingText || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  if (!target) return null;
+  const pdfjs = await loadPdfjs();
+  const pdf = await pdfjs.getDocument({
+    data: bufferToUint8(pdfBuffer),
+    disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
+  }).promise;
+
+  const start = Math.max(1, Math.min(fromPage || 1, pdf.numPages));
+  const end = Math.max(start, Math.min(toPage || start, pdf.numPages));
+
+  // Normalize a heading for comparison: uppercase, strip leading scene number
+  // ("18 EXT. KITCHEN") and any trailing scene number, collapse whitespace.
+  const normalize = (s) => String(s || '')
+    .toUpperCase()
+    .replace(/^\s*\d+[A-Z]{0,3}\s+/, '')
+    .replace(/\s+\d+[A-Z]{0,3}\s*$/, '')
+    .replace(/[—–]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const targetN = normalize(headingText);
+
+  let hit = null;
+  for (let p = start; p <= end && !hit; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+
+    const lines = [];
+    for (const it of tc.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const pdfY = it.transform ? it.transform[5] : 0;
+      const h = it.height || 12;
+      let line = lines.find(l => Math.abs(l.pdfY - pdfY) < 4);
+      if (!line) {
+        line = { pdfY, items: [], text: '', maxHeight: h };
+        lines.push(line);
+      }
+      line.items.push(it.str);
+      if (h > line.maxHeight) line.maxHeight = h;
+    }
+    for (const l of lines) l.text = l.items.join(' ').replace(/\s+/g, ' ').trim();
+    lines.sort((a, b) => b.pdfY - a.pdfY); // top → bottom
+
+    for (const line of lines) {
+      const ln = normalize(line.text);
+      if (!ln) continue;
+      if (ln === targetN || ln.includes(targetN) || (targetN.length > 16 && targetN.includes(ln))) {
+        hit = { pageNumber: p, pdfY: line.pdfY, fontHeightPdf: line.maxHeight, heading: line.text };
+        break;
+      }
+    }
+    page.cleanup();
+  }
+  await pdf.cleanup();
+  await pdf.destroy();
+  return hit;
+}
+
 async function renderPdfPagesToImages(pdfBuffer, maxPages = 30) {
   const { createCanvas } = require('@napi-rs/canvas');
   const pdfjs = await loadPdfjs();
@@ -1864,6 +2012,45 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
     const allScenes = [];        // -> sides.scenes
     const allSceneImages = [];   // -> sides._sceneImages (each has composite `key`)
 
+    // Pre-load manual scenes for every version in the request.
+    const ManualScene = require('../models/ManualScene');
+    const manualByVersion = new Map(); // versionId -> Map<normalized scene number, manualScene>
+    {
+      const versionIds = [...new Set(versionGroups.map(g => String(g.versionId)))];
+      const allManual = await ManualScene.find({ scriptVersion: { $in: versionIds } }).lean();
+      for (const vid of versionIds) manualByVersion.set(vid, new Map());
+      for (const m of allManual) {
+        const key = normalizeSceneNumber(m.sceneNumber);
+        manualByVersion.get(String(m.scriptVersion))?.set(key, m);
+      }
+    }
+
+    // Render a manual scene (page range) as a list of full-page PNG buffers.
+    async function renderManualSceneImages(pdfBuffer, totalPages, pageStart, pageEnd) {
+      const { createCanvas } = require('@napi-rs/canvas');
+      const pdfDoc = await pdfjs.getDocument({
+        data: bufferToUint8(pdfBuffer),
+        disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
+      }).promise;
+      const SCALE = 2;
+      const start = Math.max(1, Math.min(pageStart, totalPages));
+      const end = Math.max(start, Math.min(pageEnd || pageStart, totalPages));
+      const out = [];
+      for (let p = start; p <= end; p++) {
+        const page = await pdfDoc.getPage(p);
+        const viewport = page.getViewport({ scale: SCALE });
+        const canvas = createCanvas(viewport.width, viewport.height);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, viewport.width, viewport.height);
+        await page.render({ canvasContext: ctx, viewport, background: 'white' }).promise;
+        out.push(canvas.toBuffer('image/png'));
+        page.cleanup();
+      }
+      await pdfDoc.destroy();
+      return out;
+    }
+
     for (let gi = 0; gi < versionGroups.length; gi++) {
       const group = versionGroups[gi];
       const requested = new Set((group.sceneNumbers || []).map(normalizeSceneNumber));
@@ -1881,6 +2068,25 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
         continue;
       }
 
+      // Split this group's requested scenes into MANUAL (user-marked, render
+      // by page range) and AUTO (let buildPdfSceneMap detect them).
+      const manualMap = manualByVersion.get(String(group.versionId)) || new Map();
+      const manualHits = [];     // ordered list of { sn, ms }
+      for (const sn of group.sceneNumbers || []) {
+        const key = normalizeSceneNumber(sn);
+        if (manualMap.has(key)) manualHits.push({ sn: key, ms: manualMap.get(key) });
+      }
+      const manualSet = new Set(manualHits.map(h => h.sn));
+      // Auto-extracted scenes = requested minus what manual already covers.
+      // Manual scenes get injected into `pdfSceneMap` below, so the auto
+      // pipeline can render them uniformly. We therefore keep the full
+      // requested set here — including manual scene numbers — rather than
+      // splitting them out into a separate render path.
+      const autoRequested = new Set([...requested]);
+      // Suppress lint about unused — `manualSet` is consumed by the injection
+      // loop further down to decide which entries need locating.
+      void manualSet;
+
       const pdfSceneMap = await buildPdfSceneMap(pdfBuffer);
       const probeDoc = await pdfjs.getDocument({
         data: bufferToUint8(pdfBuffer),
@@ -1888,6 +2094,94 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
       }).promise;
       const totalPages = probeDoc.numPages;
       await probeDoc.destroy();
+
+      // ── Manual scenes (user-marked) ──────────────────────────────────────
+      // Strategy depends on whether we can LOCATE the heading text:
+      //   • LOCATED — inject as a synthetic block in pdfSceneMap with real
+      //     pdfY. Downstream paths treat it like any auto scene; cross-out
+      //     boundaries flow naturally from neighbouring entries.
+      //   • UNLOCATED (typo, em-dash mismatch, glyph quirks…) — render
+      //     SEPARATELY using `forceRange` on pageStart..pageEnd so the user
+      //     still gets full coverage of the marked range with proper cross-out
+      //     overlay on other scenes. Falling back to a synthetic injection
+      //     would create a tiny block at the top of pageStart and break the
+      //     cross-out chunk.
+      const unlocatedManuals = [];
+      const allUserPicked = new Set();
+      for (const g of versionGroups) (g.sceneNumbers || []).forEach(s => allUserPicked.add(normalizeSceneNumber(s)));
+
+      for (const { sn, ms } of manualHits) {
+        try {
+          const located = await locateHeadingInPdf(
+            pdfBuffer, ms.heading,
+            Math.max(1, ms.pageStart),
+            Math.max(ms.pageStart, ms.pageEnd || ms.pageStart),
+          );
+          if (located) {
+            pdfSceneMap.push({
+              sceneNumber: sn,
+              heading: located.heading || ms.heading || `Scene ${sn}`,
+              pageNumber: located.pageNumber,
+              pdfY: located.pdfY,
+              fontHeightPdf: located.fontHeightPdf || 12,
+              __manual: true,
+            });
+          } else {
+            unlocatedManuals.push({ sn, ms });
+          }
+        } catch (e) {
+          console.warn(`[sides:multi] manual-scene locate failed for ${sn} in ${label}: ${e.message}`);
+          unlocatedManuals.push({ sn, ms });
+        }
+      }
+      // Re-sort the scene map so injected manuals appear in document order
+      // (page ascending, then top-to-bottom by pdfY — descending in PDF space).
+      pdfSceneMap.sort((a, b) => (a.pageNumber - b.pageNumber) || (b.pdfY - a.pdfY));
+
+      // Track every page rendered for this group. Manual scenes claim their
+      // pages first; auto chunks dedup against them.
+      const groupRenderedPages = new Set();
+
+      // Render UNLOCATED manuals up front, sharing the same renderCrossoutImages
+      // path with `forceRange` (cross-out) OR a plain page-range render (hide).
+      for (const { sn, ms } of unlocatedManuals) {
+        try {
+          let imgs, pageNums = [];
+          if (sides.sceneDisplayMode === 'crossout') {
+            const chunk = await renderCrossoutImages(
+              pdfBuffer, pdfSceneMap, new Set([sn]), totalPages,
+              {
+                allSelectedScenes: allUserPicked,
+                forceRange: { startPage: ms.pageStart, endPage: ms.pageEnd || ms.pageStart },
+                skipPages: groupRenderedPages,
+              },
+            );
+            imgs = chunk[0]?.images || [];
+            pageNums = chunk[0]?.pageNumbers || [];
+          } else {
+            imgs = await renderManualSceneImages(pdfBuffer, totalPages, ms.pageStart, ms.pageEnd);
+            for (let p = ms.pageStart; p <= (ms.pageEnd || ms.pageStart); p++) pageNums.push(p);
+          }
+          if (!imgs.length) continue;
+          const key = `${gi}:manual:${sn}`;
+          allScenes.push({
+            sceneNumber: sn,
+            heading: ms.heading || `Scene ${sn}`,
+            rawText: '',
+            pageStart: ms.pageStart,
+            pageEnd: ms.pageEnd || ms.pageStart,
+            sourceVersion: group.versionId, sourceScriptId: group.scriptId,
+            sourceVersionLabel: label,
+            imageKey: key,
+          });
+          allSceneImages.push({ key, sceneNumber: sn, images: imgs });
+          for (const p of pageNums) groupRenderedPages.add(p);
+          // Subsequent auto branches must NOT try to render this scene again.
+          autoRequested.delete(sn);
+        } catch (e) {
+          console.warn(`[sides:multi] unlocated manual render failed for ${sn} in ${label}: ${e.message}`);
+        }
+      }
 
       // "Cross out" mode.
       if (sides.sceneDisplayMode === 'crossout') {
@@ -1903,8 +2197,8 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
         for (const g of versionGroups) (g.sceneNumbers || []).forEach(s => allUserSelected.add(normalizeSceneNumber(s)));
         // sceneOrder may carry composite "scriptId:sceneNumber" tokens (multi-
         // script picks). Project them to bare scene numbers, BUT keep only
-        // tokens whose script matches THIS group (so chunks aren't emitted in
-        // a group they don't belong to).
+        // tokens whose script matches THIS group AND aren't already covered
+        // by a manual scene entry (manual scenes were emitted above).
         const thisScriptId = String(group.scriptId || '');
         const orderedHere = Array.isArray(sides.sceneOrder) && sides.sceneOrder.length
           ? sides.sceneOrder.map(tok => {
@@ -1913,7 +2207,7 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
               const [sid, sn] = t.split(':');
               if (thisScriptId && String(sid) !== thisScriptId) return null;
               return normalizeSceneNumber(sn);
-            }).filter(sn => sn && requested.has(sn))
+            }).filter(sn => sn && autoRequested.has(sn))
           : [];
 
         if (orderedHere.length) {
@@ -1921,9 +2215,10 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
           // already rendered in this version's PDF so a page shared by two
           // ordered scenes (e.g. scene 1 ends and scene 2A begins on the same
           // page) is rendered ONLY ONCE — credited to whichever scene reaches
-          // it first in sceneOrder.
+          // it first in sceneOrder. Seed from `groupRenderedPages` so the
+          // pages already emitted by any manual scenes above are skipped too.
           const seenSn = new Set();
-          const renderedPages = new Set();
+          const renderedPages = new Set(groupRenderedPages);
           for (const sn of orderedHere) {
             if (seenSn.has(sn)) continue;
             seenSn.add(sn);
@@ -1950,16 +2245,17 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
           continue;
         }
 
-        // Default crossout (no rearrange): one combined chunk per group.
-        const crossImages = await renderCrossoutImages(pdfBuffer, pdfSceneMap, requested, totalPages);
+        // Default crossout (no rearrange): one combined chunk per group, with
+        // pages already claimed by manual scenes skipped.
+        const crossImages = await renderCrossoutImages(pdfBuffer, pdfSceneMap, autoRequested, totalPages, { skipPages: groupRenderedPages });
         if (!crossImages.length || !crossImages[0].images.length) {
           console.warn(`[sides:multi] crossout produced no pages for version ${label}`);
           continue;
         }
         const key = `${gi}:__crossout__`;
         allScenes.push({
-          sceneNumber: [...requested].join(', '),
-          heading: `Scenes ${[...requested].join(', ')} (${label})`,
+          sceneNumber: [...autoRequested].join(', '),
+          heading: `Scenes ${[...autoRequested].join(', ')} (${label})`,
           rawText: '',
           sourceVersion: group.versionId, sourceScriptId: group.scriptId,
           sourceVersionLabel: label,
@@ -1969,9 +2265,9 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
         continue;
       }
 
-      const renderSpecs = buildRenderSpecs(pdfSceneMap, requested, totalPages);
+      const renderSpecs = buildRenderSpecs(pdfSceneMap, autoRequested, totalPages);
       if (renderSpecs.length === 0) {
-        console.warn(`[sides:multi] no specs for version ${label}, requested ${[...requested].join(', ')}`);
+        console.warn(`[sides:multi] no specs for version ${label}, requested ${[...autoRequested].join(', ')}`);
         continue;
       }
 
@@ -2039,6 +2335,8 @@ async function debugPdfSceneMap(pdfBuffer) {
   }).promise;
 
   const HEADING_RE = /\b(?:INT\.?|EXT\.?|INT\/EXT\.?|I\/E\.?)\s+|\bSCENE\b/i;
+  const STYLIZED_HEADING_RE = /^\s*(?:INTERCUT|INSERT|FLASHBACK|END\s+FLASHBACK|MONTAGE|TITLE|BACK\s+(?:TO|IN)|SUPER|END\s+OF\s+(?:ACT|EPISODE)|ACT\s+(?:ONE|TWO|THREE|FOUR|FIVE|SIX|\d+)|FADE\s+(?:IN|OUT|TO)|MEANWHILE|LATER|TIME\s+CUT|JUMP\s+CUT)\b/i;
+  const QUOTED_TITLE_RE = /^\s*[""''][^""''\n]{2,60}[""''][.,!?\s]*$/;
   const SCENE_NUM_RE = /^(\d+[A-Za-z]{0,3})\.?$/;
 
   const pages = [];
@@ -2048,6 +2346,18 @@ async function debugPdfSceneMap(pdfBuffer) {
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale: 1 });
     const tc = await page.getTextContent();
+
+    // Mirror buildPdfSceneMap's bold-font detection.
+    const boldFonts = new Set();
+    if (tc.styles) {
+      for (const [fontName, style] of Object.entries(tc.styles)) {
+        const fam = String(style.fontFamily || '').toLowerCase();
+        if (/(?:^|[-_ ])(bold|bd|black|heavy|demi|semibold|extrabold|ultrabold|700|800|900)(?:$|[-_ ])/.test(fam)
+          || /bold/.test(fam)) {
+          boldFonts.add(fontName);
+        }
+      }
+    }
 
     // Group items into lines by Y coordinate (same algorithm as buildPdfSceneMap).
     const linesMap = [];
@@ -2062,18 +2372,22 @@ async function debugPdfSceneMap(pdfBuffer) {
         line = { pdfY, items: [], maxHeight: h, text: '' };
         linesMap.push(line);
       }
-      line.items.push({ str: str.trim(), pdfX: Number(pdfX.toFixed(1)) });
+      line.items.push({ str: str.trim(), pdfX: Number(pdfX.toFixed(1)), isBold: boldFonts.has(it.fontName) });
       if (h > line.maxHeight) line.maxHeight = h;
     }
     for (const l of linesMap) {
       l.items.sort((a, b) => a.pdfX - b.pdfX);
       l.text = l.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      const meaningful = l.items.filter(it => !SCENE_NUM_RE.test(it.str));
+      l.allBold = meaningful.length > 0 && meaningful.every(it => it.isBold);
+      l.leftEdge = meaningful.length > 0 ? Math.min(...meaningful.map(it => it.pdfX)) : Infinity;
     }
     linesMap.sort((a, b) => b.pdfY - a.pdfY);
 
     const pageW = viewport.width || 612;
     const LEFT_MARGIN = pageW * 0.15;
     const RIGHT_MARGIN = pageW * 0.70;
+    const HEADING_X_LIMIT = pageW * 0.30;
 
     const pageDump = { page: p, pageWidth: pageW, leftMarginCutoff: LEFT_MARGIN, rightMarginCutoff: RIGHT_MARGIN, lines: [] };
 
@@ -2086,7 +2400,11 @@ async function debugPdfSceneMap(pdfBuffer) {
       const rightMatch = rightMarginItem && rightMarginItem.str.match(SCENE_NUM_RE);
       const marginPair = leftMatch && rightMatch && leftMatch[1].toUpperCase() === rightMatch[1].toUpperCase();
       const matchesSlug = HEADING_RE.test(upper);
-      const matchesHeading = matchesSlug || marginPair;
+      const matchesStylized = STYLIZED_HEADING_RE.test(line.text);
+      const matchesQuoted = QUOTED_TITLE_RE.test(line.text);
+      const matchesBold = line.allBold
+        && line.text.length >= 2 && line.text.length <= 120;
+      const matchesHeading = matchesSlug || marginPair || matchesStylized || matchesQuoted || matchesBold;
 
       const dump = {
         text: line.text,
@@ -2094,6 +2412,9 @@ async function debugPdfSceneMap(pdfBuffer) {
         items: line.items,
         matchesSlug,
         marginPair,
+        matchesBold,
+        matchesStylized,
+        matchesQuoted,
         matchesHeading,
       };
 
