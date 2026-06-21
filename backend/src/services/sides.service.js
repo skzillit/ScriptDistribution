@@ -117,15 +117,28 @@ async function buildPdfSceneMap(pdfBuffer) {
     }
     for (const l of linesMap) {
       l.items.sort((a, b) => a.pdfX - b.pdfX);
-      // Rebuild line text: concatenate glyphs/words, inserting a space for
-      // explicit space glyphs OR a positional gap wider than ~¼ of the font size.
-      const spaceThresh = (l.maxHeight || 12) * 0.25;
+      // Rebuild line text: concatenate glyphs/words, inserting a space ONLY
+      // for explicit space glyphs OR a positional gap clearly larger than a
+      // single character advance. Some PDFs emit glyph-by-glyph with
+      // `width === 0`, which would otherwise make us treat every inter-char
+      // advance as a "wide gap" and insert a space between every letter
+      // ("INT. BACKSTAGE" → "I N T . B A C K S T A G E"). We estimate a
+      // sensible per-glyph width when the PDF omits it.
+      const fontH = l.maxHeight || 12;
+      // Courier-style monospace glyphs are ~0.6× em; proportional fonts vary
+      // but ~0.5× em is a safe lower bound for a real character advance.
+      const estimatedGlyphAdvance = fontH * 0.6;
+      // A real word break is roughly a full em or more; require the gap to
+      // exceed 1.3 × the estimated glyph advance so kerning + monospace
+      // inter-char advance never triggers a spurious split.
+      const spaceThresh = estimatedGlyphAdvance * 1.3;
       let text = '';
       let prevEnd = null;
       for (const it of l.items) {
+        const effW = it.pdfW > 0 ? it.pdfW : estimatedGlyphAdvance;
         if (/^\s+$/.test(it.str)) {
           if (text && !text.endsWith(' ')) text += ' ';
-          prevEnd = it.pdfX + (it.pdfW || 0);
+          prevEnd = it.pdfX + effW;
           continue;
         }
         if (prevEnd !== null) {
@@ -133,7 +146,7 @@ async function buildPdfSceneMap(pdfBuffer) {
           if (gap > spaceThresh && text && !text.endsWith(' ')) text += ' ';
         }
         text += it.str;
-        prevEnd = it.pdfX + (it.pdfW || 0);
+        prevEnd = it.pdfX + effW;
       }
       l.text = text.replace(/\s+/g, ' ').trim();
       // Trimmed token list for margin scene-number detection.
@@ -165,8 +178,39 @@ async function buildPdfSceneMap(pdfBuffer) {
       // Compute margin scene-number tokens first — they're both a strong
       // signal that this line IS a heading (used as a fallback admission rule)
       // AND the most authoritative source for the scene number itself.
-      const leftMarginItem = line.items.find(it => it.pdfX < LEFT_MARGIN && SCENE_NUM_RE.test(it.str));
-      const rightMarginItem = line.items.find(it => it.pdfX > RIGHT_MARGIN && SCENE_NUM_RE.test(it.str));
+      //
+      // Margin tokens MUST be spatially separated from the heading text by a
+      // wide whitespace gap. Otherwise digits embedded inside the heading
+      // (years like `1960S`, `1971`, `1972` — which a glyph-by-glyph PDF
+      // exposes as standalone tokens "1", "9", "7", "1") would be mistaken
+      // for margin scene numbers when they happen to fall inside the
+      // right-margin pdfX zone.
+      const MIN_MARGIN_GAP = 15; // points — clearly wider than inter-char spacing
+
+      let leftMarginItem = null;
+      for (let i = 0; i < line.items.length; i++) {
+        const it = line.items[i];
+        if (it.pdfX >= LEFT_MARGIN) break;
+        if (!SCENE_NUM_RE.test(it.str)) continue;
+        // Need a wide gap before the next item (the heading text starts).
+        const next = line.items.slice(i + 1).find(n => n.pdfX > it.pdfX);
+        const itEndX = it.pdfX + (it.pdfW || 7);
+        if (!next || (next.pdfX - itEndX) > MIN_MARGIN_GAP) {
+          leftMarginItem = it;
+          break;
+        }
+      }
+
+      let rightMarginItem = null;
+      for (let i = line.items.length - 1; i >= 0; i--) {
+        const it = line.items[i];
+        if (it.pdfX <= RIGHT_MARGIN) break;
+        if (!SCENE_NUM_RE.test(it.str)) continue;
+        const prev = line.items[i - 1];
+        if (!prev) { rightMarginItem = it; break; }
+        const prevEndX = prev.pdfX + (prev.pdfW || 7);
+        if ((it.pdfX - prevEndX) > MIN_MARGIN_GAP) { rightMarginItem = it; break; }
+      }
       const leftMatch = leftMarginItem && leftMarginItem.str.match(SCENE_NUM_RE);
       const rightMatch = rightMarginItem && rightMarginItem.str.match(SCENE_NUM_RE);
       const marginPair = leftMatch && rightMatch
@@ -212,13 +256,12 @@ async function buildPdfSceneMap(pdfBuffer) {
         const leadingMatch = line.text.match(/^(\d+[A-Za-z]{0,3})\s+(?:INT|EXT|INT\/EXT|I\/E|SCENE)/i);
         if (leadingMatch) num = leadingMatch[1];
       }
-      if (!num && matchesSlug) {
-        const lastItem = line.items[line.items.length - 1];
-        if (lastItem && SCENE_NUM_RE.test(lastItem.str)) {
-          const m = lastItem.str.match(SCENE_NUM_RE);
-          if (m) num = m[1];
-        }
-      }
+      // (Removed an old "trailing item is digit-only" fallback — on
+      // glyph-by-glyph PDFs it picked up the LAST DIGIT of an embedded year
+      // (e.g. `INT. ... DAY. 1971` → "1") as the scene number, then the
+      // post-pass dropped every other un-numbered slug heading. The
+      // gap-checked right-margin scan above already covers the legitimate
+      // `INT. KITCHEN - DAY      5.` case.)
 
       // Strip PT (part) suffix — "107PT" → "107"
       if (num) num = num.toUpperCase().replace(/PT$/, '') || null;
