@@ -669,6 +669,119 @@ async function renderCrossoutImages(pdfBuffer, pdfSceneMap, requestedSceneNumber
 }
 
 /**
+ * Group scenes into "page-connected components" for crossout + rearrange.
+ *
+ * Full-page cross-out rendering can't reorder two scenes that share a physical
+ * page: whichever scene renders first drags the other's start (or tail) along
+ * with it, and the naive per-scene + page-dedup approach then emits the other
+ * scene's REMAINING pages later in the sequence — tearing that scene apart.
+ * (Real case: 178C and 179 share printed page 111, 179 continues onto 111A;
+ * ordering 179A before 179 emitted 111, 112, 111A — splitting scene 179.)
+ *
+ * Fix: scenes whose rendered pages overlap are merged into one component and
+ * rendered together as a single contiguous chunk (natural document order
+ * inside). The component is emitted at the EARLIEST position any of its
+ * members holds in the user's requested order. Every scene stays continuous;
+ * reorders that are physically possible still happen.
+ *
+ * `orderedScenes` — deduped, normalized scene numbers in the user's requested
+ * order. Returns [{ members, keep, rankScene }] in emit order, where `keep`
+ * is the Set to pass to renderCrossoutImages and `rankScene` is the member
+ * that anchors the component's position (used for order-token matching).
+ */
+async function groupScenesByPageOverlap(pdfBuffer, pdfSceneMap, orderedScenes, totalPages) {
+  const SCALE = 2;
+  const MIN_SELECTED_PX = 24; // must mirror renderCrossoutImages' page-keep test
+  const wanted = new Set(orderedScenes);
+
+  // Every occurrence of a selected scene, spanning its heading to the next
+  // DIFFERENT scene's heading (mirrors renderCrossoutImages' block building).
+  const blocks = [];
+  for (let i = 0; i < pdfSceneMap.length; i++) {
+    const s = pdfSceneMap[i];
+    if (!s.sceneNumber || s.sceneNumber === '__DAYBREAK__') continue;
+    if (!wanted.has(s.sceneNumber)) continue;
+    let next = null;
+    for (let j = i + 1; j < pdfSceneMap.length; j++) {
+      if (pdfSceneMap[j].sceneNumber !== s.sceneNumber) { next = pdfSceneMap[j]; break; }
+    }
+    blocks.push({
+      sn: s.sceneNumber,
+      startPage: s.pageNumber,
+      startPdfY: s.pdfY,
+      startFontHeightPdf: s.fontHeightPdf || 12,
+      endPage: next ? next.pageNumber : totalPages,
+      endPdfY: next ? next.pdfY : null,
+    });
+  }
+
+  // Page heights for the touched range — the ≥MIN_SELECTED_PX content test
+  // needs the rendered page height to convert PDF-space Ys to canvas px.
+  const touched = new Set();
+  for (const b of blocks) {
+    for (let p = Math.max(1, b.startPage); p <= Math.min(totalPages, b.endPage); p++) touched.add(p);
+  }
+  const pageHeight = new Map();
+  if (touched.size) {
+    const pdfjs = await loadPdfjs();
+    const pdf = await pdfjs.getDocument({
+      data: bufferToUint8(pdfBuffer),
+      disableFontFace: true, useSystemFonts: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    }).promise;
+    for (const p of touched) {
+      const page = await pdf.getPage(p);
+      pageHeight.set(p, page.getViewport({ scale: SCALE }).height);
+      page.cleanup();
+    }
+    await pdf.cleanup();
+    await pdf.destroy();
+  }
+
+  // The pages each scene would actually render (same keep test as the renderer).
+  const pagesByScene = new Map();
+  for (const b of blocks) {
+    for (let p = Math.max(1, b.startPage); p <= Math.min(totalPages, b.endPage); p++) {
+      const H = pageHeight.get(p) || 1584;
+      let top = (p === b.startPage) ? (H - b.startPdfY * SCALE - b.startFontHeightPdf * SCALE) : 0;
+      let bottom = (p === b.endPage && b.endPdfY != null) ? (H - b.endPdfY * SCALE) : H;
+      top = Math.max(0, top);
+      bottom = Math.min(H, bottom);
+      if (bottom - top < MIN_SELECTED_PX) continue;
+      if (!pagesByScene.has(b.sn)) pagesByScene.set(b.sn, new Set());
+      pagesByScene.get(b.sn).add(p);
+    }
+  }
+
+  // Union-find: merge scenes that share any rendered page.
+  const parent = new Map();
+  const find = (x) => {
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  for (const sn of orderedScenes) parent.set(sn, sn);
+  const ownerOfPage = new Map();
+  for (const sn of orderedScenes) {
+    for (const p of (pagesByScene.get(sn) || [])) {
+      if (ownerOfPage.has(p)) union(sn, ownerOfPage.get(p));
+      else ownerOfPage.set(p, sn);
+    }
+  }
+
+  // Components ranked by the earliest position any member holds in the
+  // requested order. `rankScene` is that earliest member.
+  const compByRoot = new Map();
+  orderedScenes.forEach((sn, idx) => {
+    const root = find(sn);
+    if (!compByRoot.has(root)) compByRoot.set(root, { members: [], keep: new Set(), rank: idx, rankScene: sn });
+    const c = compByRoot.get(root);
+    c.members.push(sn);
+    c.keep.add(sn);
+  });
+  return [...compByRoot.values()].sort((a, b) => a.rank - b.rank);
+}
+
+/**
  * Build render specs from the PDF scene map, filtered by requested scene numbers.
  * Each spec describes EXACTLY what to render for one requested scene:
  *   - startPage, startPdfY, startFontHeightPdf — where the scene begins
@@ -1118,25 +1231,31 @@ async function extractSides(sidesId, versionId, sceneNumbers, options = {}) {
           : [];
 
         if (orderedHere.length) {
-          // Rearrange-aware crossout: one chunk per scene in sceneOrder. Other
-          // user-picked scenes stay clean inside each chunk via allSelectedScenes.
-          // Track rendered pages so a page shared by two ordered scenes is
-          // emitted only once (credited to the first scene that reaches it).
+          // Rearrange-aware crossout. Scenes that share a physical page are
+          // merged into one component and rendered together (document order
+          // inside) so no scene is ever torn apart by the reorder — see
+          // groupScenesByPageOverlap. Other user-picked scenes stay clean
+          // inside every chunk via allSelectedScenes.
           const scenesOut = [];
           const imagesOut = [];
           const seenSn = new Set();
+          const uniqueOrdered = orderedHere.filter(sn => !seenSn.has(sn) && seenSn.add(sn));
+          const components = await groupScenesByPageOverlap(originalPdfBuffer, pdfSceneMap, uniqueOrdered, pdfTotalPages);
           const renderedPages = new Set();
-          for (const sn of orderedHere) {
-            if (seenSn.has(sn)) continue;
-            seenSn.add(sn);
+          for (const comp of components) {
             const chunk = await renderCrossoutImages(
-              originalPdfBuffer, pdfSceneMap, new Set([sn]), pdfTotalPages,
+              originalPdfBuffer, pdfSceneMap, comp.keep, pdfTotalPages,
               { allSelectedScenes: requestedScenes, skipPages: renderedPages },
             );
             if (!chunk.length || !chunk[0].images.length) continue;
-            const key = `crossout:${sn}`;
-            scenesOut.push({ sceneNumber: sn, heading: `Scene ${sn}`, rawText: '', imageKey: key });
-            imagesOut.push({ key, sceneNumber: sn, images: chunk[0].images });
+            const key = `crossout:${comp.rankScene}`;
+            scenesOut.push({
+              sceneNumber: comp.rankScene,
+              heading: comp.members.length > 1 ? `Scenes ${comp.members.join(', ')}` : `Scene ${comp.rankScene}`,
+              rawText: '',
+              imageKey: key,
+            });
+            imagesOut.push({ key, sceneNumber: comp.rankScene, images: chunk[0].images });
             for (const p of (chunk[0].pageNumbers || [])) renderedPages.add(p);
           }
           if (imagesOut.length) {
@@ -1954,23 +2073,25 @@ async function attachFolderImages(sides) {
             : [];
 
           if (orderedHere.length) {
-            // Rearrange-aware: one folder entry per scene in sceneOrder.
-            // Each chunk's grey/X overlay leaves the folder's other picked
-            // scenes clean too (via allSelectedScenes = wantedSet). A page
-            // shared by two ordered scenes appears only once.
+            // Rearrange-aware: page-sharing scenes merge into one component
+            // (rendered together, document order inside) so no scene is torn
+            // apart — see groupScenesByPageOverlap. The folder's other picked
+            // scenes stay clean via allSelectedScenes = wantedSet.
             const seenSn = new Set();
+            const uniqueOrdered = orderedHere.filter(sn => !seenSn.has(sn) && seenSn.add(sn));
+            const components = await groupScenesByPageOverlap(buf, sceneMap, uniqueOrdered, totalPages);
             const renderedPages = new Set();
             let produced = false;
-            for (const sn of orderedHere) {
-              if (seenSn.has(sn)) continue;
-              seenSn.add(sn);
+            for (const comp of components) {
               const chunk = await renderCrossoutImages(
-                buf, sceneMap, new Set([sn]), totalPages,
+                buf, sceneMap, comp.keep, totalPages,
                 { allSelectedScenes: wantedSet, skipPages: renderedPages },
               );
               if (!chunk.length || !chunk[0].images.length) continue;
               out.push({
-                label: sn,
+                // label doubles as the order-matching scene number in
+                // generateSidesPdf — must stay a single scene number.
+                label: comp.rankScene,
                 color: folder.color,
                 sourceScriptId: folder.script,
                 description: produced ? '' : folder.description,
@@ -2254,35 +2375,36 @@ async function extractSidesMultiVersion(sidesId, versionGroups) {
           : [];
 
         if (orderedHere.length) {
-          // Dedup while preserving first-occurrence order. Track every page
-          // already rendered in this version's PDF so a page shared by two
-          // ordered scenes (e.g. scene 1 ends and scene 2A begins on the same
-          // page) is rendered ONLY ONCE — credited to whichever scene reaches
-          // it first in sceneOrder. Seed from `groupRenderedPages` so the
-          // pages already emitted by any manual scenes above are skipped too.
+          // Rearrange-aware crossout. Page-sharing scenes merge into one
+          // component (rendered together, document order inside) so no scene
+          // is torn apart by the reorder — see groupScenesByPageOverlap.
+          // renderedPages is seeded from groupRenderedPages so pages already
+          // emitted by manual scenes above are skipped.
           const seenSn = new Set();
+          const uniqueOrdered = orderedHere.filter(sn => !seenSn.has(sn) && seenSn.add(sn));
+          const components = await groupScenesByPageOverlap(pdfBuffer, pdfSceneMap, uniqueOrdered, totalPages);
           const renderedPages = new Set(groupRenderedPages);
-          for (const sn of orderedHere) {
-            if (seenSn.has(sn)) continue;
-            seenSn.add(sn);
+          for (const comp of components) {
             const chunk = await renderCrossoutImages(
-              pdfBuffer, pdfSceneMap, new Set([sn]), totalPages,
+              pdfBuffer, pdfSceneMap, comp.keep, totalPages,
               { allSelectedScenes: allUserSelected, skipPages: renderedPages },
             );
             if (!chunk.length || !chunk[0].images.length) {
-              console.warn(`[sides:multi] crossout rearrange: no fresh pages for scene ${sn} in ${label}`);
+              console.warn(`[sides:multi] crossout rearrange: no fresh pages for scenes ${comp.members.join(', ')} in ${label}`);
               continue;
             }
-            const key = `${gi}:crossout:${sn}`;
+            const key = `${gi}:crossout:${comp.rankScene}`;
             allScenes.push({
-              sceneNumber: sn,
-              heading: `Scene ${sn} (${label})`,
+              sceneNumber: comp.rankScene,
+              heading: comp.members.length > 1
+                ? `Scenes ${comp.members.join(', ')} (${label})`
+                : `Scene ${comp.rankScene} (${label})`,
               rawText: '',
               sourceVersion: group.versionId, sourceScriptId: group.scriptId,
               sourceVersionLabel: label,
               imageKey: key,
             });
-            allSceneImages.push({ key, sceneNumber: sn, images: chunk[0].images });
+            allSceneImages.push({ key, sceneNumber: comp.rankScene, images: chunk[0].images });
             for (const p of (chunk[0].pageNumbers || [])) renderedPages.add(p);
           }
           continue;
@@ -2565,4 +2687,4 @@ function flattenPdfSceneMap(pdfSceneMap) {
   return out;
 }
 
-module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap, debugPdfSceneMap, flattenPdfSceneMap };
+module.exports = { extractSides, extractSidesWithAI, extractSidesMultiVersion, generateSidesPdf, buildSceneMap, buildPdfSceneMap, debugPdfSceneMap, flattenPdfSceneMap, groupScenesByPageOverlap };
